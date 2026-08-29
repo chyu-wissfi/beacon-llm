@@ -19,7 +19,10 @@ from jsonschema import validate
 from llm_gateway.core.errors import GatewayError
 from llm_gateway.core.schemas import LLMRequest, LLMResponse, ModelConfig, Usage
 from llm_gateway.providers.base import Provider
-from llm_gateway.providers.openai_compatible import OpenAICompatibleProvider, is_retryable
+from llm_gateway.providers.openai_compatible import (
+    OpenAICompatibleProvider,
+    is_retryable,
+)
 from llm_gateway.services.catalog import MODEL_CONFIGS
 from llm_gateway.services.prompt_service import build_messages
 from llm_gateway.services.trace_service import record_trace

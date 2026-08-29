@@ -5,7 +5,11 @@ from fastapi.responses import StreamingResponse
 
 from llm_gateway.core.errors import GatewayError
 from llm_gateway.core.schemas import LLMRequest, LLMResponse
-from llm_gateway.services.invocation import call_with_fallback, stream_with_fallback, validate_model
+from llm_gateway.services.invocation import (
+    call_with_fallback,
+    stream_with_fallback,
+    validate_model,
+)
 from llm_gateway.services.prompt_service import build_messages
 
 router = APIRouter()

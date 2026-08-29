@@ -10,7 +10,7 @@ trace 记录字段——不断言 demo 内部实现细节。所有上游请求�
 
 import json
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import pytest
@@ -42,7 +42,11 @@ def _openai_legacy_httpx(monkeypatch):
     # httpx2.Timeout 对象与 httpx1 不兼容，直接忽略（demo 的每请求超时由
     # openai 的 legacy 归一化逻辑另行处理，与本工厂无关）。
     def _legacy_httpx_client(**kwargs: Any) -> httpx.AsyncClient:
-        return httpx.AsyncClient(base_url=kwargs.get("base_url"))
+        # cast 是运行期恒等：仅满足 httpx base_url: URLTypes 的标注。openai 构造
+        # AsyncHttpxClientWrapper 时恒传 base_url（openai/_base_client.py），不会缺键。
+        return httpx.AsyncClient(
+            base_url=cast("httpx.URL | str", kwargs.get("base_url")),
+        )
 
     monkeypatch.setattr("openai._base_client.AsyncHttpxClientWrapper", _legacy_httpx_client)
 

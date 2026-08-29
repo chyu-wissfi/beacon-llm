@@ -7,9 +7,10 @@ is_retryable 谓词询问"该不该重试"，自己不感知 SDK 类型。
 import json
 import os
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, cast
 
 from openai import APIConnectionError, APITimeoutError, AsyncOpenAI, RateLimitError
+from openai.types.chat import ChatCompletionMessageParam
 
 from llm_gateway.core.errors import GatewayError
 from llm_gateway.core.schemas import Message, ModelConfig, Usage
@@ -75,9 +76,14 @@ class OpenAICompatibleProvider:
         timeout_seconds: float,
     ) -> AsyncIterator[str]:
         # 逐块读取上游响应，为 Gateway 的实时流式代理提供标准增量文本。
+        # cast 是运行期恒等：model_dump() 产出 dict[str, Any]，SDK 形参是
+        # TypedDict 联合，两者结构等价但类型系统无法证明，用 cast 桥接。
         response = await self.create_client(config).chat.completions.create(
             model=config.provider_model,
-            messages=[message.model_dump() for message in messages],
+            messages=cast(
+                "list[ChatCompletionMessageParam]",
+                [message.model_dump() for message in messages],
+            ),
             stream=True,
             timeout=timeout_seconds,
         )
