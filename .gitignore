@@ -1,0 +1,10 @@
+.superpowers/
+
+# Python：虚拟环境与构建产物不入库，环境由 uv.lock + pyproject.toml 复现。
+__pycache__/
+*.py[cod]
+.venv/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/

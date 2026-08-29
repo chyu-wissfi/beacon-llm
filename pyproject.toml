@@ -1,0 +1,37 @@
+[project]
+name = "beacon-llm"
+version = "0.1.0"
+description = "LLM Gateway for business-facing Agents（面向业务 Agent 的 LLM 网关）"
+requires-python = ">=3.13"
+# 版本不在此处钉死：具体版本交给 uv.lock 锁定，pyproject 只声明直接依赖面。
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "openai",
+    "anthropic",
+    "pydantic",
+    "jsonschema",
+    "sqlalchemy[asyncio]",
+    "aiosqlite",
+    "prometheus-client",
+]
+
+# uv 惯例的 dev 依赖分组（PEP 735）：测试/静态检查只在开发时需要，
+# 不进入运行环境依赖面，避免部署侧拖入测试工具链。
+[dependency-groups]
+dev = [
+    "respx",
+    "pytest",
+    "pytest-asyncio",
+    "ruff",
+    "pyright",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# src layout：wheel 只打包 src/llm_gateway，tests/ 等目录不进发布产物；
+# 显式声明使 uvicorn 后续能以 `uv run uvicorn llm_gateway.main:app` 启动。
+[tool.hatch.build.targets.wheel]
+packages = ["src/llm_gateway"]
