@@ -19,7 +19,9 @@ import respx
 
 # 集中 import：这是迁移任务唯一需要改动的地方（换成 llm_gateway 包内的对应符号）。
 # 不在测试函数里散落 import demo 内部符号。
-from gateway import CALL_TRACES, MODEL_CONFIGS, app
+from llm_gateway.main import app
+from llm_gateway.services.catalog import MODEL_CONFIGS
+from llm_gateway.services.trace_service import CALL_TRACES
 
 pytestmark = pytest.mark.asyncio
 
