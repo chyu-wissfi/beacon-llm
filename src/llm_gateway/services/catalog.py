@@ -1,30 +1,16 @@
-"""模型目录 / Prompt 模板库 / 价格表：静态数据源。
+"""模型目录 / Prompt 模板库 / 价格表：M02 配置中心化的对外接缝。
 
-常量集中在本模块是为了给 M02/M07 留出替换缝：届时把这里换成配置/文件
-加载，编排层（invocation/prompt_service/trace_service）零改动。语义约束：
-MODEL_CONFIGS 保持 import 时读环境变量（M01 与 demo 行为等价）。
+模型拓扑与价格已迁至 config/*.yaml（loader 见 core/config.py，导入期 fail-fast）；
+本模块保留 M01 的导入面——编排层（invocation/trace_service/prompt_service）与
+契约测试仍从这里 import MODEL_CONFIGS / PROMPT_TEMPLATES / PRICE_PER_MILLION，
+既有消费字段取值与迁移前逐字等价。PROMPT_TEMPLATES 按用户裁决留在代码，
+M07 再做文件化（模板是运行资产，热加载语义见 design.md §5）。
 """
 
-import os
+from llm_gateway.core.config import CONFIG
+from llm_gateway.core.schemas import PromptTemplate
 
-from llm_gateway.core.schemas import ModelConfig, PromptTemplate
-
-MODEL_CONFIGS = {
-    "general-primary": ModelConfig(
-        provider_model=os.getenv("PRIMARY_PROVIDER_MODEL", "deepseek-v4-flash"),
-        base_url=os.getenv("PRIMARY_BASE_URL", "https://api.deepseek.com"),
-        api_key_env="DEEPSEEK_API_KEY",
-        supports_structured_output=True,
-        structured_output_mode="json_object",
-    ),
-    "general-backup": ModelConfig(
-        provider_model=os.getenv("BACKUP_PROVIDER_MODEL", "deepseek-chat"),
-        base_url=os.getenv("BACKUP_BASE_URL", "https://api.deepseek.com"),
-        api_key_env="DEEPSEEK_BACKUP_API_KEY",
-        supports_structured_output=True,
-        structured_output_mode="json_object",
-    ),
-}
+MODEL_CONFIGS = CONFIG.models
 
 PROMPT_TEMPLATES = {
     ("knowledge_decision", "v1"): PromptTemplate(
@@ -34,7 +20,8 @@ PROMPT_TEMPLATES = {
     )
 }
 
+# trace_service 以 price["input"] 的字典形态取价：这是 M01 确定的消费面，
+# 这里把校验后的 PriceEntry 摊平回字典，编排层零改动。
 PRICE_PER_MILLION = {
-    "general-primary": {"input": 1.0, "output": 4.0},
-    "general-backup": {"input": 0.8, "output": 3.2},
+    name: {"input": entry.input, "output": entry.output} for name, entry in CONFIG.prices.items()
 }
