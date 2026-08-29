@@ -6,8 +6,8 @@
 .PHONY: check test-live
 
 # ruff 检查面 = src + tests，与 pyright 的 include 对齐：
-# 根目录 gateway.py 是任务 6 待删除的历史 demo（契约测试已指向 llm_gateway 包，
-# 它不再是行为面），不纳入工具链检查范围。
+# 根目录已无历史 demo（gateway.py 已删除），src + tests 即全部源码，
+# 覆盖这两处即覆盖全部源码面，不存在工具链检查盲区。
 check:
 	uv run ruff check src tests
 	uv run pyright

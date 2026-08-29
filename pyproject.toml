@@ -42,7 +42,8 @@ packages = ["src/llm_gateway"]
 # ---------------------------------------------------------------------------
 
 [tool.pytest.ini_options]
-# 只收集 tests/：src/ 是实现代码不是测试源，根目录 demo（gateway.py）将随任务 6 删除。
+# 只收集 tests/：src/ 是实现代码不是测试源；根目录已无历史 demo（gateway.py 已删除），
+# tests/ 即全部测试源。
 testpaths = ["tests"]
 # pytest-asyncio：契约测试用显式 `pytestmark = pytest.mark.asyncio`（strict 语义），
 # 这里把模式与 fixture 的 event loop scope 显式钉死为当前实际行为（unset 即 function），
@@ -65,7 +66,7 @@ ignore = ["E501"]
 
 [tool.pyright]
 # 检查面与 ruff 对齐：src + tests 全量通过是本任务的验收口径；
-# 根目录 gateway.py 是任务 6 待删除的历史 demo，不入检查面。
+# 根目录已无历史 demo（gateway.py 已删除），src + tests 即全部源码，无额外检查面。
 include = ["src", "tests"]
 pythonVersion = "3.13"
 typeCheckingMode = "standard"
