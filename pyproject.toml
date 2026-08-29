@@ -1,0 +1,72 @@
+[project]
+name = "beacon-llm"
+version = "0.1.0"
+description = "LLM Gateway for business-facing Agents（面向业务 Agent 的 LLM 网关）"
+requires-python = ">=3.13"
+# 版本不在此处钉死：具体版本交给 uv.lock 锁定，pyproject 只声明直接依赖面。
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "openai",
+    "anthropic",
+    "pydantic",
+    "jsonschema",
+    "sqlalchemy[asyncio]",
+    "aiosqlite",
+    "prometheus-client",
+]
+
+# uv 惯例的 dev 依赖分组（PEP 735）：测试/静态检查只在开发时需要，
+# 不进入运行环境依赖面，避免部署侧拖入测试工具链。
+[dependency-groups]
+dev = [
+    "respx",
+    "pytest",
+    "pytest-asyncio",
+    "ruff",
+    "pyright",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# src layout：wheel 只打包 src/llm_gateway，tests/ 等目录不进发布产物；
+# 显式声明使 uvicorn 后续能以 `uv run uvicorn llm_gateway.main:app` 启动。
+[tool.hatch.build.targets.wheel]
+packages = ["src/llm_gateway"]
+
+# ---------------------------------------------------------------------------
+# 工具链（M01 任务 5）：pytest / ruff / pyright 统一收敛在 pyproject，
+# `make check` 按同一份配置执行，避免配置散落后行为漂移。
+# ---------------------------------------------------------------------------
+
+[tool.pytest.ini_options]
+# 只收集 tests/：src/ 是实现代码不是测试源；根目录已无历史 demo（gateway.py 已删除），
+# tests/ 即全部测试源。
+testpaths = ["tests"]
+# pytest-asyncio：契约测试用显式 `pytestmark = pytest.mark.asyncio`（strict 语义），
+# 这里把模式与 fixture 的 event loop scope 显式钉死为当前实际行为（unset 即 function），
+# 防止 pytest-asyncio 升级后隐式默认变化导致夹具行为漂移或配置告警。
+asyncio_mode = "strict"
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.ruff]
+target-version = "py313"
+# src layout：把 llm_gateway 声明为一方代码，isort 才能正确地把
+# `from llm_gateway...` 与第三方 import 分节（单独一块、排在前缀之后）。
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+# 稳妥默认规则集：pyflakes（F）+ pycodestyle（E/W）+ import 排序（I）。
+# E501（行超长）豁免：等价迁移产物里保留了 demo 的超长调用行（最长约 200 列），
+# 本里程碑禁止为过 lint 而重排已定稿代码；行宽规约推迟到引入 formatter 的里程碑统一决策。
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]
+
+[tool.pyright]
+# 检查面与 ruff 对齐：src + tests 全量通过是本任务的验收口径；
+# 根目录已无历史 demo（gateway.py 已删除），src + tests 即全部源码，无额外检查面。
+include = ["src", "tests"]
+pythonVersion = "3.13"
+typeCheckingMode = "standard"
