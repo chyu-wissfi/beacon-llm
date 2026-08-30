@@ -26,7 +26,7 @@ M05 新增 slow_success 剧本：准入并发验收（25 慢请求 ≤20 到上�
 """
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -87,7 +87,31 @@ class SlowSuccess:
     finish_reason: str = "stop"
 
 
-Scenario = Success | RateLimited | Timeout | StreamInterrupt | InvalidOutput | ConsecutiveThenSuccess | SlowSuccess
+@dataclass
+class ScenarioSequence:
+    # 按序消费剧本（M06）：每次调用取下一个场景，末位停留——修复/回退测试
+    # 需要"第一次坏第二次好"的时序确定性；consumed 是已消费数的可观测面。
+    # 前向引用：Scenario 联合在本类之后才定义（字符串注解，运行期不求值）。
+    scenarios: list["Scenario"]
+    consumed: int = 0
+
+    def next(self) -> "Scenario":
+        current = self.scenarios[min(self.consumed, len(self.scenarios) - 1)]
+        if self.consumed < len(self.scenarios):
+            self.consumed += 1
+        return current
+
+
+Scenario = (
+    Success
+    | RateLimited
+    | Timeout
+    | StreamInterrupt
+    | InvalidOutput
+    | ConsecutiveThenSuccess
+    | SlowSuccess
+    | ScenarioSequence
+)
 
 # 坏输出剧本的兜底 usage：内容既然无效，用量语义无从谈起，记 0 不伪造。
 _EMPTY_USAGE = Usage(input_tokens=0, output_tokens=0)
@@ -99,6 +123,16 @@ class FakeAdapter:
         self.scenario: Scenario = scenario if scenario is not None else Success()
         # 收到的请求计数（complete 与 stream 共用）：no_hidden_retry 的断言面。
         self.attempts = 0
+        # 被取消/关闭的流计数（M06）：取消传播的可观测面——编排层取消时必须
+        # 关闭 provider 生成器（下游任务取消），这里感知并计数供测试断言。
+        self.cancelled_streams = 0
+
+    def _current_scenario(self) -> Scenario:
+        # 剧本解析：ScenarioSequence 按调用次序消费（末位停留），其余恒定。
+        scenario = self.scenario
+        if isinstance(scenario, ScenarioSequence):
+            scenario = scenario.next()
+        return scenario
 
     async def complete(
         self,
@@ -113,7 +147,7 @@ class FakeAdapter:
         # 语义参数（temperature/max_tokens/json_mode 等）对 Fake 无行为含义：
         # 剧本决定一切，收下形参只为结构匹配 Protocol。
         self.attempts += 1
-        scenario = self.scenario
+        scenario = self._current_scenario()
         if isinstance(scenario, Success):
             return scenario.content, scenario.usage, scenario.finish_reason
         if isinstance(scenario, InvalidOutput):
@@ -139,13 +173,23 @@ class FakeAdapter:
         messages: list[Message],
         timeout_seconds: float,
         include_usage: bool = False,
-    ) -> AsyncIterator[ContentDelta | StreamCompleted]:
-        # 与 Protocol 声明一致：普通 def 返回 async generator。
+    ) -> AsyncGenerator[ContentDelta | StreamCompleted, None]:
+        # 与 Protocol 声明一致（M06 收窄为 AsyncGenerator）：普通 def 返回 async generator。
         return self._stream()
 
-    async def _stream(self) -> AsyncIterator[ContentDelta | StreamCompleted]:
+    async def _stream(self) -> AsyncGenerator[ContentDelta | StreamCompleted, None]:
         self.attempts += 1
-        scenario = self.scenario
+        try:
+            async for event in self._stream_events():
+                yield event
+        except (asyncio.CancelledError, GeneratorExit):
+            # 取消传播感知（M06）：编排层/客户端断开导致的关闭在这里计数后
+            # 原样上抛——CancelledError/GeneratorExit 绝不吞。
+            self.cancelled_streams += 1
+            raise
+
+    async def _stream_events(self) -> AsyncIterator[ContentDelta | StreamCompleted]:
+        scenario = self._current_scenario()
         if isinstance(scenario, StreamInterrupt):
             for index in range(scenario.chunks_before_failure):
                 yield ContentDelta(f"chunk-{index}")

@@ -28,10 +28,15 @@ def record_trace(
     usage: Usage,
     latency_ms: int,
     attempts: int,
-    status: Literal["success", "failed"],
+    status: Literal["success", "failed", "cancelled"],
     error_code: str | None = None,
+    caller: str | None = None,
+    route_reason: str | None = None,
+    ttft_ms: int | None = None,
 ) -> None:
     # 留存调用元数据，支持成本、延迟、模型和模板版本治理。
+    # M06 起可选记账面：caller / route_reason / ttft_ms（None 向后兼容，
+    # 语义见 core/schemas.py CallTrace 字段注）。
     trace = CallTrace(
         request_id=request_id,
         timestamp=datetime.now(timezone.utc),
@@ -46,6 +51,9 @@ def record_trace(
         attempts=attempts,
         status=status,
         error_code=error_code,
+        caller=caller,
+        route_reason=route_reason,
+        ttft_ms=ttft_ms,
     )
     CALL_TRACES.append(trace)
     logger.info("llm_call_trace=%s", trace.model_dump_json())

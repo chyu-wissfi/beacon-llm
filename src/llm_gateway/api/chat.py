@@ -225,11 +225,12 @@ async def _chunk_stream(
     internal_request: LLMRequest,
     completion_id: str,
     created: int,
+    caller: str,
 ) -> AsyncIterator[str]:
     # 编排层产出内部事件流（dict，含 type/delta/model 或 type/error），这里逐
     # 事件翻译为 OpenAI chunk 线格式。流式语义铁律（首块前可 fallback、首块后
     # 不重生成）留在编排层（design.md review 锚点 ④：invocation.py 是唯一状态机）。
-    async for event in stream_with_fallback(internal_request):
+    async for event in stream_with_fallback(internal_request, caller=caller):
         if event["type"] == "content.delta":
             yield _encode_chunk(
                 ChatCompletionChunk(
@@ -304,12 +305,13 @@ async def _admitted_chunk_stream(
     internal_request: LLMRequest,
     completion_id: str,
     created: int,
+    caller: str,
 ) -> AsyncIterator[str]:
     # 流式的准入持有形态（spec 任务 2：并发计数从准入持有到流式结束）：
     # 端点在返回 StreamingResponse 前完成准入，释放推迟到生成器终结——
     # 无论正常收梢、流内失败还是客户端提前断开（GeneratorExit）。
     try:
-        async for chunk in _chunk_stream(internal_request, completion_id, created):
+        async for chunk in _chunk_stream(internal_request, completion_id, created, caller):
             yield chunk
     finally:
         permit.release()
@@ -366,6 +368,7 @@ async def create_chat_completion(
                 internal_request,
                 completion_id=str(uuid4()),
                 created=int(time.time()),
+                caller=caller.display_name,
             ),
             media_type="text/event-stream",
         )
@@ -378,7 +381,7 @@ async def create_chat_completion(
         rpm=rate.rpm if rate is not None else None,
         tpm=rate.tpm if rate is not None else None,
     ):
-        response = await call_with_fallback(internal_request)
+        response = await call_with_fallback(internal_request, caller=caller.display_name)
     # TPM 事后记账（spec 任务 3）：只在成功完成后按实际 usage 入账。
     ratelimit.ADMISSION.record_usage(internal_request.model, response.usage)
     return _to_chat_completion(response, created=int(time.time()))

@@ -18,7 +18,7 @@
 
 import json
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from typing import Any, Final
 
 from anthropic import AsyncAnthropic
@@ -99,7 +99,7 @@ class AnthropicProvider:
         # include_usage 是 openai chat 协议的开关；Anthropic 原生回传 usage，
         # 形参收下只为结构匹配 Protocol，实现不消费。
         include_usage: bool = False,
-    ) -> AsyncIterator[ContentDelta | StreamCompleted]:
+    ) -> AsyncGenerator[ContentDelta | StreamCompleted, None]:
         # 普通 def 返回 async generator（与 Protocol 声明的返回类型对齐，
         # 见 base.py 注释）。流式不携带 response_schema，结构化裁定只在
         # complete 面生效。
@@ -110,7 +110,7 @@ class AnthropicProvider:
         config: ModelConfig,
         messages: list[Message],
         timeout_seconds: float,
-    ) -> AsyncIterator[ContentDelta | StreamCompleted]:
+    ) -> AsyncGenerator[ContentDelta | StreamCompleted, None]:
         client = self.create_client(config)
         try:
             # 流式不携带语义参数（Protocol 的 stream 签名无此面），缺省值对齐。

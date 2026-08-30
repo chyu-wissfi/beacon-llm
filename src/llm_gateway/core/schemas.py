@@ -102,8 +102,16 @@ class CallTrace(BaseModel):
     cost_usd: float = Field(ge=0)
     latency_ms: int = Field(ge=0)
     attempts: int = Field(ge=0)
-    status: Literal["success", "failed"]
+    # M06 起三终态：success / failed / cancelled（任务 8 的唯一终态词表）。
+    status: Literal["success", "failed", "cancelled"]
     error_code: str | None = None
+    # M06 新增可选记账面（默认 None，向后兼容）：
+    # caller：认证后的调用方显示名（M05 注入 request.state，这里入账供 M09 消费）；
+    # route_reason：fallback 链上逐步离开理由的拼接（routing.py 生成）；
+    # ttft_ms：流式首块延迟（首块前未到达则 None）。
+    caller: str | None = None
+    route_reason: str | None = None
+    ttft_ms: int | None = None
 
 
 @dataclass(frozen=True)
