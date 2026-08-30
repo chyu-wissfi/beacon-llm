@@ -13,6 +13,11 @@ demo 的 content.delta / response.completed 线格式不在这里之外出现。
   未知 type 或缺 schema 报 unsupported_field；深层形态校验仍后置（M07/M08）。
 - 本层不透传白名单外字段，也不伪造行为：任何"放行但未消费"的字段都必须
   在注释里标出后置里程碑，而不是静默吞掉。
+
+准入边界（M05）：请求路径先认证（401），再模型白名单（400），然后按固化序列
+进准入（全局并发 -> 熔断 -> RPM -> TPM -> 供应商并发）；非流式随上下文退出释放，
+流式持有到生成器结束（spec 任务 2）。治理端点（/v1/models、/v1/traces）本里程碑
+不鉴权（演进项，台账已录）。TPM 事后记账也在本层（调用完成后按实际 usage）。
 """
 
 import json
@@ -21,12 +26,15 @@ from collections.abc import AsyncIterator
 from typing import Any, Final, Literal
 from uuid import uuid4
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Header, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from llm_gateway.api.errors import openai_error_body
 from llm_gateway.api.schemas import ChatCompletionRequest
+from llm_gateway.core import ratelimit
+from llm_gateway.core.auth import authenticate
+from llm_gateway.core.config import CONFIG
 from llm_gateway.core.errors import (
     ERROR_REGISTRY,
     UNSUPPORTED_COMBINATION,
@@ -249,6 +257,12 @@ async def _chunk_stream(
                 )
             )
             usage = event["usage"]
+            if usage is not None:
+                # TPM 事后记账（M05 任务 3）：按准入模型入账（实际服务方可能
+                # 是 fallback 备用——事后记账的已知近似，归入准入模型的预算）；
+                # 上游未回传 usage（如 chat 流式未开 include_usage）则跳过，
+                # 不伪造用量。
+                ratelimit.ADMISSION.record_usage(internal_request.model, usage)
             if internal_request.include_usage and usage is not None:
                 # usage chunk（OpenAI 惯例）：[DONE] 前附一块，choices 为空；
                 # 仅当调用方显式请求（include_usage）才发，不请求不谎报。
@@ -285,13 +299,38 @@ async def _chunk_stream(
             )
 
 
+async def _admitted_chunk_stream(
+    permit: ratelimit.AdmissionPermit,
+    internal_request: LLMRequest,
+    completion_id: str,
+    created: int,
+) -> AsyncIterator[str]:
+    # 流式的准入持有形态（spec 任务 2：并发计数从准入持有到流式结束）：
+    # 端点在返回 StreamingResponse 前完成准入，释放推迟到生成器终结——
+    # 无论正常收梢、流内失败还是客户端提前断开（GeneratorExit）。
+    try:
+        async for chunk in _chunk_stream(internal_request, completion_id, created):
+            yield chunk
+    finally:
+        permit.release()
+
+
 # ---------------------------------------------------------------------------
 # 端点
 # ---------------------------------------------------------------------------
 
 
 @router.post("/v1/chat/completions", response_model=ChatCompletionResponse)
-async def create_chat_completion(request: ChatCompletionRequest) -> ChatCompletionResponse | StreamingResponse:
+async def create_chat_completion(
+    request: ChatCompletionRequest,
+    http_request: Request,
+    authorization: str | None = Header(default=None),
+) -> ChatCompletionResponse | StreamingResponse:
+    # 认证（M05 任务 1）：准入序列的第一层，失败 401 unauthorized；
+    # caller 标识注入请求上下文（request.state，M09 trace 消费）。
+    caller = authenticate(authorization, CONFIG.callers)
+    http_request.state.caller = caller.display_name
+
     # stream + response_format 互斥沿用 demo 的 unsupported_combination（400，
     # controller 裁决）。在端点层以 GatewayError 抛稳定码，而不是放进 Pydantic
     # validator——后者只能给 code=None 的通用 400，会丢失稳定错误码（任务 A
@@ -303,16 +342,27 @@ async def create_chat_completion(request: ChatCompletionRequest) -> ChatCompleti
 
     internal_request = _to_internal_request(request)
 
+    # 准入前先定模型（白名单 400 在准入之前）：准入需要 provider 与限流参数。
+    # 结构化能力检查仍由编排层随 response_schema 一并做，此处只取配置。
+    model_config = validate_model(internal_request.model, None)
+    rate = model_config.rate_limit
+
     if request.stream:
         # 统一端点下 stream=true 直接走流式分支（controller 裁决）：M03 起
         # use_stream_endpoint 运行时不再抛出（注册表双冻结保留，仅作历史码）。
         # 请求级校验（模型白名单、Prompt 渲染）保持在返回 StreamingResponse
         # 之前——与 demo 一致：请求问题走 HTTP 错误，只有上游/流中途失败才
-        # 走流内错误事件。
-        validate_model(internal_request.model, None)
+        # 走流内错误事件。准入拒绝同为请求期 HTTP 错误（429/503）。
         build_messages(internal_request)
+        permit = await ratelimit.ADMISSION.acquire(
+            internal_request.model,
+            model_config.provider,
+            rpm=rate.rpm if rate is not None else None,
+            tpm=rate.tpm if rate is not None else None,
+        )
         return StreamingResponse(
-            _chunk_stream(
+            _admitted_chunk_stream(
+                permit,
                 internal_request,
                 completion_id=str(uuid4()),
                 created=int(time.time()),
@@ -320,5 +370,15 @@ async def create_chat_completion(request: ChatCompletionRequest) -> ChatCompleti
             media_type="text/event-stream",
         )
 
-    response = await call_with_fallback(internal_request)
+    # 非流式：准入资源随上下文退出释放；拒绝（429/503）时编排层零波及，
+    # 上游不会收到任何请求。
+    async with ratelimit.ADMISSION.admit(
+        internal_request.model,
+        model_config.provider,
+        rpm=rate.rpm if rate is not None else None,
+        tpm=rate.tpm if rate is not None else None,
+    ):
+        response = await call_with_fallback(internal_request)
+    # TPM 事后记账（spec 任务 3）：只在成功完成后按实际 usage 入账。
+    ratelimit.ADMISSION.record_usage(internal_request.model, response.usage)
     return _to_chat_completion(response, created=int(time.time()))

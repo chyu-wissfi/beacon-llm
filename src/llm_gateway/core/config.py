@@ -15,7 +15,7 @@
 """
 
 import os
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal
 
@@ -41,12 +41,22 @@ class ConfigError(RuntimeError):
 
 
 class RateLimitEntry(BaseModel):
-    # 限流参数占位的文件形态：M02 只校验类型（正整数或未声明），M05 才消费。
+    # 限流参数的文件形态：M05 起消费 rpm/tpm（准入层令牌桶与 TPM 账本）；
+    # concurrency（每模型并发）语义未在 spec 定义，暂不消费（deferred）。
     model_config = ConfigDict(extra="forbid")
 
     rpm: int | None = Field(default=None, gt=0)
     tpm: int | None = Field(default=None, gt=0)
     concurrency: int | None = Field(default=None, gt=0)
+
+
+class AdmissionEntry(BaseModel):
+    # 进程级准入阈值的文件形态（M05 任务 5，ADR-0004 §5：阈值全部是配置项）。
+    # 默认值即 design §3.4 的基线（全局 20 / 每供应商 10），整块可省略。
+    model_config = ConfigDict(extra="forbid")
+
+    global_concurrency: int = Field(default=20, gt=0)
+    provider_concurrency: int = Field(default=10, gt=0)
 
 
 class ModelEntry(BaseModel):
@@ -85,10 +95,12 @@ class PriceEntry(BaseModel):
 
 class ModelsFile(BaseModel):
     # models.yaml 顶层：包一层 models 键，与 callers/prices 的文件结构保持同构，
-    # 也给未来文件级元数据（如版本字段）留出空间。
+    # 也给未来文件级元数据（如版本字段）留出空间。admission 是进程级准入
+    # 阈值（M05），与模型条目同文件是因为两者同为治理参数面；可省略吃默认。
     model_config = ConfigDict(extra="forbid")
 
     models: dict[str, ModelEntry]
+    admission: AdmissionEntry = Field(default_factory=AdmissionEntry)
 
 
 class CallersFile(BaseModel):
@@ -125,6 +137,9 @@ class GatewayConfig:
     callers: dict[str, CallerConfig]
     prices: dict[str, PriceEntry]
     price_version: str
+    # 进程级准入阈值（M05）：core/ratelimit 的准入门在启动后据此构建。
+    # dataclass 的默认工厂用 dataclasses.field（pydantic Field 不适用）。
+    admission: AdmissionEntry = field(default_factory=AdmissionEntry)
 
 
 # ---------------------------------------------------------------------------
@@ -197,7 +212,7 @@ def _config_error(path: Path, exc: ValidationError) -> ConfigError:
     return ConfigError("\n".join(lines))
 
 
-def _load_models(path: Path) -> dict[str, ModelConfig]:
+def _load_models(path: Path) -> tuple[dict[str, ModelConfig], AdmissionEntry]:
     try:
         file = ModelsFile.model_validate(_read_yaml(path))
     except ValidationError as exc:
@@ -224,7 +239,7 @@ def _load_models(path: Path) -> dict[str, ModelConfig]:
         for target in config.fallback:
             if target not in models:
                 raise ConfigError(f"{path}: {name}.fallback 引用了未定义的平台模型 {target}")
-    return models
+    return models, file.admission
 
 
 def _load_callers(path: Path) -> dict[str, CallerConfig]:
@@ -248,7 +263,7 @@ def load_config(root: Path | str = DEFAULT_CONFIG_DIR) -> GatewayConfig:
     # 独立成可传 root 的函数是为了可单测：Task 4 的用例直接传临时目录构造
     # 合法/缺字段/类型错的各种配置，不碰真实的仓库 config/。
     root = Path(root)
-    models = _load_models(root / "models.yaml")
+    models, admission = _load_models(root / "models.yaml")
     callers = _load_callers(root / "callers.yaml")
     prices_path = root / "prices.yaml"
     prices, price_version = _load_prices(prices_path)
@@ -261,7 +276,7 @@ def load_config(root: Path | str = DEFAULT_CONFIG_DIR) -> GatewayConfig:
     for name in models:
         if name not in prices:
             raise ConfigError(f"{prices_path}: 缺少模型 {name} 的价格条目")
-    return GatewayConfig(models=models, callers=callers, prices=prices, price_version=price_version)
+    return GatewayConfig(models=models, callers=callers, prices=prices, price_version=price_version, admission=admission)
 
 
 # 导入即加载：uvicorn 导入 app 的链条必然经过本模块，配置损坏在进程启动阶段

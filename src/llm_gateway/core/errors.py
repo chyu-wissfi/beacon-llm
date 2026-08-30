@@ -154,6 +154,10 @@ class GatewayError(Exception):
         code: ErrorCode,
         message: str | None = None,
         status_code: int | None = None,
+        # 429 类准入拒绝的建议重试间隔（秒，M05 新增）：注册表三元组之外
+        # 的可选承载，None 表示无建议（api 层不附 Retry-After 头）；不影响
+        # code/message/status 的注册表语义，既有构造点零改动。
+        retry_after: float | None = None,
     ) -> None:
         spec = ERROR_REGISTRY.get(code)
         if spec is None:
@@ -166,4 +170,5 @@ class GatewayError(Exception):
         self.code: str = code
         self.message = message if message is not None else spec.message
         self.status_code = status_code if status_code is not None else spec.status_code
+        self.retry_after = retry_after
         super().__init__(self.message)
