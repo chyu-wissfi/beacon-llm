@@ -1,4 +1,9 @@
-"""Prompt 模板渲染：调用方只能选择受控模板并传变量，模板正文不出 Gateway。"""
+"""Prompt 模板渲染：调用方只能选择受控模板并传变量，模板正文不出 Gateway。
+
+模板来源是文件资产（templates/<name>/<version>.yaml，M07）：查询经
+prompt/loader 的 TEMPLATES 实例，判变/热加载语义封装在 loader 内，
+本模块只负责渲染与错误码（缺模板/缺变量均在调用模型前失败，不变量 #11）。
+"""
 
 from string import Template
 
@@ -8,12 +13,12 @@ from llm_gateway.core.errors import (
     GatewayError,
 )
 from llm_gateway.core.schemas import LLMRequest, Message, PromptSelection
-from llm_gateway.services.catalog import PROMPT_TEMPLATES
+from llm_gateway.prompt.loader import TEMPLATES
 
 
 def render_prompt(selection: PromptSelection) -> Message:
     # 从受控模板库渲染系统提示词，调用方只能传版本和变量。
-    template = PROMPT_TEMPLATES.get((selection.name, selection.version))
+    template = TEMPLATES.get(selection.name, selection.version)
     if template is None:
         # 错误码与默认三元组取自注册表（core/errors.py），调用点不写字面量。
         raise GatewayError(UNKNOWN_PROMPT_TEMPLATE)

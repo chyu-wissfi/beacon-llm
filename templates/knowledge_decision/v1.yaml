@@ -1,0 +1,6 @@
+# 模板资产：版本即文件（templates/<name>/<version>.yaml，design.md §5）。
+# name/version 必须与路径一致（<name>/<version>.yaml），不一致按解析失败处理
+# ——路径是模板坐标的唯一事实来源，元数据只是随文件自描述的校验面。
+name: knowledge_decision
+version: v1
+system_template: 你是${product_name}的知识库决策器。资料不足时搜索，资料充分时结束回答。不得编造制度内容。
