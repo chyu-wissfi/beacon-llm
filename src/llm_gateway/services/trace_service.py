@@ -24,6 +24,11 @@ from sqlalchemy import insert
 from sqlalchemy.exc import IntegrityError
 
 from llm_gateway.core.schemas import CallTrace, PromptSelection, Usage
+from llm_gateway.observability.metrics import (
+    LATENCY_SECONDS,
+    REQUESTS_TOTAL,
+    TOKENS_TOTAL,
+)
 from llm_gateway.services.catalog import PRICE_PER_MILLION
 from llm_gateway.storage.engine import get_engine
 from llm_gateway.storage.models import TraceRow
@@ -90,7 +95,22 @@ def record_trace(
     )
     CALL_TRACES.append(trace)
     logger.info("llm_call_trace=%s", trace.model_dump_json())
+    _observe_metrics(trace)
     _schedule_persist(trace)
+
+
+def _observe_metrics(trace: CallTrace) -> None:
+    # 指标与 trace 是同一终态事件的两本账（M10 任务 4）：metrics 是速率、
+    # trace 是审计。record_trace 是唯一终态出口（恰好一次由 TraceDraft 幂等
+    # 防线保证），终态类指标在此集中记账，无遗漏无重复：
+    # - requests_total 的 model 维用请求模型（三终态恒存在；实际服务模型在
+    #   tokens_total 维度承载）；
+    # - tokens 只在实际服务到模型时入账，取消/早退的缺口与 trace 同款语义。
+    REQUESTS_TOTAL.labels(model=trace.requested_model, status=trace.status).inc()
+    LATENCY_SECONDS.observe(trace.latency_ms / 1000)
+    if trace.actual_model is not None:
+        TOKENS_TOTAL.labels(model=trace.actual_model, direction="input").inc(trace.input_tokens)
+        TOKENS_TOTAL.labels(model=trace.actual_model, direction="output").inc(trace.output_tokens)
 
 
 def _schedule_persist(trace: CallTrace) -> None:

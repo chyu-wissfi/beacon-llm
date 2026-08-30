@@ -20,6 +20,8 @@ import time
 from collections.abc import Callable
 from typing import Final, Literal
 
+from llm_gateway.observability.metrics import update_breaker_state
+
 # 状态机参数（spec 任务 4 定值）：连续 5 次失败打开，开 30 秒。
 FAILURE_THRESHOLD: Final[int] = 5
 OPEN_SECONDS: Final[float] = 30.0
@@ -39,6 +41,14 @@ class CircuitBreaker:
         # half_open 的探测名额：放行时置位，探测有结果（成功/失败）或被
         # 准入后层拒绝而归还（relinquish_probe）时清除。
         self._probe_in_flight = False
+        # 模型坐标：get_breaker 创建时注入，状态广播（M10）用它打标签；
+        # 直建新实例（单测）缺省 None 时不广播——状态机语义零依赖观测面。
+        self.model: str | None = None
+
+    def _broadcast(self) -> None:
+        # 熔断状态迁移点广播独热（M10 任务 4：机制在动作点计数）。
+        if self.model is not None:
+            update_breaker_state(self.model, self.state)
 
     def allow_request(self) -> bool:
         # 准入查询。open 到期自动转 half_open 并给出唯一探测名额。
@@ -49,6 +59,7 @@ class CircuitBreaker:
             if now - self._opened_at < OPEN_SECONDS:
                 return False
             self.state = "half_open"
+            self._broadcast()
         # half_open：探测名额一次一个；已有探测在途则其余请求仍拒。
         if self._probe_in_flight:
             return False
@@ -66,6 +77,7 @@ class CircuitBreaker:
         self.state = "closed"
         self._consecutive_failures = 0
         self._probe_in_flight = False
+        self._broadcast()
 
     def record_failure(self) -> None:
         # 失败计入：半开探测失败重新打开；闭合态累计到阈值打开。
@@ -80,6 +92,7 @@ class CircuitBreaker:
         self.state = "open"
         self._opened_at = self._clock()
         self._probe_in_flight = False
+        self._broadcast()
         # 连续失败数保留在阈值上：重新打开后若到期再探测失败，直接重开，
         # 不需要再攒 5 次（半开的语义就是"给一次机会"）。
 
@@ -93,9 +106,11 @@ _BREAKERS: dict[str, CircuitBreaker] = {}
 
 def get_breaker(model: str) -> CircuitBreaker:
     # 懒创建：模型名在配置白名单内，但熔断器不必在启动期预建。
+    # 创建点注入模型坐标：状态迁移广播（M10）据此打标签。
     breaker = _BREAKERS.get(model)
     if breaker is None:
         breaker = CircuitBreaker()
+        breaker.model = model
         _BREAKERS[model] = breaker
     return breaker
 

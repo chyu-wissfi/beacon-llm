@@ -1,4 +1,5 @@
-"""治理类只读端点：/v1/models（OpenAI 面）与 /v1/traces（网关审计域）。
+"""治理类只读端点：/v1/models（OpenAI 面）、/v1/traces（网关审计域）
+与运维面 /healthz、/metrics（M10）。
 
 design.md §3.1：/v1/models 返回平台模型列表，供调用方发现可用模型；/v1/traces
 保留内部 CallTrace 形态——审计是网关自己的域，不属于 OpenAI 协议，故不套
@@ -19,10 +20,13 @@ from datetime import timezone
 from typing import Any, Literal
 
 from fastapi import APIRouter
+from fastapi.responses import Response
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from llm_gateway import __version__
 from llm_gateway.core.schemas import CallTrace
 from llm_gateway.services.catalog import MODEL_CONFIGS
 from llm_gateway.services.trace_service import flush_pending
@@ -82,6 +86,27 @@ class TraceAggregation(BaseModel):
 
     summary: TraceStats
     groups: list[TraceGroup]
+
+
+class Health(BaseModel):
+    # /healthz（M10 任务 2）：200 + 版本号；版本号与 app.version 同源
+    # （llm_gateway.__version__），部署侧 healthcheck 打本端点（design.md §7）。
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["ok"]
+    version: str
+
+
+@router.get("/healthz", response_model=Health)
+async def healthz() -> Health:
+    return Health(status="ok", version=__version__)
+
+
+@router.get("/metrics")
+async def metrics_endpoint() -> Response:
+    # Prometheus 文本协议（M10 任务 2）：默认注册表的全量样本（含
+    # process/python 采集器的默认指标）；指标定义与接线点见 observability/metrics.py。
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 @router.get("/v1/models", response_model=ModelList)

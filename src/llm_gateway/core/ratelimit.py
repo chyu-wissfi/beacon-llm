@@ -41,6 +41,7 @@ from llm_gateway.core.errors import (
     GatewayError,
 )
 from llm_gateway.core.schemas import Usage
+from llm_gateway.observability.metrics import RATE_LIMITED_TOTAL
 
 # 准入顺序的常量序列（spec 任务 5）：auth 在端点依赖层，其余在 acquire 内。
 ADMISSION_ORDER: Final[tuple[str, ...]] = (
@@ -247,10 +248,15 @@ class AdmissionGate:
             releases.append(provider_gate.release)
 
             return AdmissionPermit(releases)
-        except BaseException:
+        except BaseException as exc:
             # 拒绝路径（含非 GatewayError 的编程错误）：已持有资源反序全放。
             for release in reversed(releases):
                 release()
+            # 限流计数在拒绝动作点（M10 任务 4）：只计 RPM 桶拒绝（RATE_LIMITED）
+            # ——全局/供应商并发超限（OVERLOADED/PROVIDER_OVERLOADED）与 TPM 超额是
+            # 容量/预算面而非速率限流面；上游 429 不在此层发生（走重试口径）。
+            if isinstance(exc, GatewayError) and exc.code == RATE_LIMITED:
+                RATE_LIMITED_TOTAL.labels(model=model).inc()
             raise
 
     @asynccontextmanager
