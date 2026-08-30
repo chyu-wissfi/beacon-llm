@@ -16,7 +16,15 @@ from uuid import uuid4
 from jsonschema import ValidationError as JsonSchemaError
 from jsonschema import validate
 
-from llm_gateway.core.errors import GatewayError
+from llm_gateway.core.errors import (
+    INVALID_JSON,
+    MODEL_UNAVAILABLE,
+    SCHEMA_VALIDATION_FAILED,
+    STRUCTURED_OUTPUT_UNSUPPORTED,
+    UNKNOWN_MODEL,
+    UPSTREAM_STREAM_FAILED,
+    GatewayError,
+)
 from llm_gateway.core.schemas import LLMRequest, LLMResponse, ModelConfig, Usage
 from llm_gateway.providers.base import Provider
 from llm_gateway.providers.openai_compatible import (
@@ -38,9 +46,10 @@ def validate_model(model: str, response_schema: dict[str, Any] | None) -> ModelC
     # 校验模型白名单和结构化能力，阻止不等价的 fallback。
     config = MODEL_CONFIGS.get(model)
     if config is None:
-        raise GatewayError("unknown_model", "模型不在 Gateway 允许列表中", 400)
+        # 错误码与默认三元组取自注册表（core/errors.py），调用点不写字面量。
+        raise GatewayError(UNKNOWN_MODEL)
     if response_schema is not None and not config.supports_structured_output:
-        raise GatewayError("structured_output_unsupported", "模型不支持 Structured Output", 400)
+        raise GatewayError(STRUCTURED_OUTPUT_UNSUPPORTED)
     return config
 
 
@@ -70,9 +79,9 @@ async def call_with_fallback(request: LLMRequest) -> LLMResponse:
                         parsed = json.loads(content)
                         validate(instance=parsed, schema=request.response_schema)
                     except json.JSONDecodeError as exc:
-                        raise GatewayError("invalid_json", "模型没有返回合法 JSON") from exc
+                        raise GatewayError(INVALID_JSON) from exc
                     except JsonSchemaError as exc:
-                        raise GatewayError("schema_validation_failed", "模型结果不符合 response_schema") from exc
+                        raise GatewayError(SCHEMA_VALIDATION_FAILED) from exc
                 response = LLMResponse(
                     request_id=request_id,
                     model=model_name,
@@ -93,9 +102,9 @@ async def call_with_fallback(request: LLMRequest) -> LLMResponse:
                     continue
                 break
     latency_ms = int((time.perf_counter() - started) * 1000)
-    error_code = "model_unavailable"
+    error_code = MODEL_UNAVAILABLE
     record_trace(request_id, requested_model, None, request.prompt, Usage(input_tokens=0, output_tokens=0), latency_ms, attempts, "failed", error_code)
-    raise GatewayError(error_code, "主模型和备用模型均不可用") from last_error
+    raise GatewayError(error_code) from last_error
 
 
 def encode_sse(event: dict[str, Any]) -> str:
@@ -125,5 +134,5 @@ async def stream_with_fallback(request: LLMRequest) -> AsyncIterator[str]:
             if emitted or not is_retryable(exc):
                 break
     logger.exception("upstream stream failed", exc_info=last_error)
-    record_trace(str(uuid4()), request.model, None, request.prompt, Usage(input_tokens=0, output_tokens=0), int((time.perf_counter() - started) * 1000), attempts, "failed", "upstream_stream_failed")
-    yield encode_sse({"type": "response.failed", "error": "upstream_stream_failed"})
+    record_trace(str(uuid4()), request.model, None, request.prompt, Usage(input_tokens=0, output_tokens=0), int((time.perf_counter() - started) * 1000), attempts, "failed", UPSTREAM_STREAM_FAILED)
+    yield encode_sse({"type": "response.failed", "error": UPSTREAM_STREAM_FAILED})
