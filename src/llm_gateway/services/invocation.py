@@ -107,13 +107,16 @@ async def call_with_fallback(request: LLMRequest) -> LLMResponse:
     raise GatewayError(error_code) from last_error
 
 
-def encode_sse(event: dict[str, Any]) -> str:
-    # 将统一事件编码为浏览器和 Agent 都可消费的 SSE 格式。
-    return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-
-
-async def stream_with_fallback(request: LLMRequest) -> AsyncIterator[str]:
+async def stream_with_fallback(request: LLMRequest) -> AsyncIterator[dict[str, Any]]:
     # 上游首块前可切备用模型；首块后仅发送流内错误，避免文本重复。
+    # 产出内部事件流（非线格式），三类事件：
+    #   {"type": "content.delta", "delta": <文本增量>, "model": <实际服务模型>}
+    #   {"type": "response.completed", "model": <实际服务模型>}
+    #   {"type": "response.failed", "error": <注册表错误码>}
+    # SSE / OpenAI chunk / [DONE] 等线格式由 api 层一次性翻译（design.md §3.3：
+    # 方言不进 services 层）；demo 期的 encode_sse 已随 /v1/llm/stream 删除。
+    # delta 事件携带 model：OpenAI chunk 逐块标注实际服务方，fallback 后调用方
+    # 在每个块上（而非仅终态）都能看到真实模型。
     messages = build_messages(request)
     started = time.perf_counter()
     attempts = 0
@@ -125,9 +128,9 @@ async def stream_with_fallback(request: LLMRequest) -> AsyncIterator[str]:
             attempts += 1
             async for delta in provider.stream(config, messages, request.timeout_seconds):
                 emitted = True
-                yield encode_sse({"type": "content.delta", "delta": delta})
+                yield {"type": "content.delta", "delta": delta, "model": model_name}
             record_trace(str(uuid4()), request.model, model_name, request.prompt, Usage(input_tokens=0, output_tokens=0), int((time.perf_counter() - started) * 1000), attempts, "success")
-            yield encode_sse({"type": "response.completed", "model": model_name})
+            yield {"type": "response.completed", "model": model_name}
             return
         except Exception as exc:
             last_error = exc
@@ -135,4 +138,4 @@ async def stream_with_fallback(request: LLMRequest) -> AsyncIterator[str]:
                 break
     logger.exception("upstream stream failed", exc_info=last_error)
     record_trace(str(uuid4()), request.model, None, request.prompt, Usage(input_tokens=0, output_tokens=0), int((time.perf_counter() - started) * 1000), attempts, "failed", UPSTREAM_STREAM_FAILED)
-    yield encode_sse({"type": "response.failed", "error": UPSTREAM_STREAM_FAILED})
+    yield {"type": "response.failed", "error": UPSTREAM_STREAM_FAILED}

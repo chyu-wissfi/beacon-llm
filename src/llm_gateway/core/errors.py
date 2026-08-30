@@ -109,6 +109,10 @@ ERROR_REGISTRY: Final[dict[ErrorCode, ErrorSpec]] = {
     # 不作 GatewayError 抛出：只作为 trace error_code 与 SSE 终态事件 payload
     # 使用；登记默认三元组只为注册表形态统一，message/status 当前无行为面。
     UPSTREAM_STREAM_FAILED: ErrorSpec("上游流式输出失败", 502),
+    # M03 起运行时不再抛出：/v1/llm 与 /v1/llm/stream 合并为统一端点
+    # /v1/chat/completions，stream=true 直接走流式分支（controller 裁决）。
+    # 三元组双冻结原样保留（message 里的旧路径仅作历史记录），码不从注册表
+    # 删除——封闭集合只增不减。
     USE_STREAM_ENDPOINT: ErrorSpec("流式请求请使用 /v1/llm/stream", 400),
     UNSUPPORTED_COMBINATION: ErrorSpec("流式输出不支持 response_schema", 400),
     STRUCTURED_OUTPUT_UNSUPPORTED: ErrorSpec("模型不支持 Structured Output", 400),

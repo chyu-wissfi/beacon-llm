@@ -1,4 +1,4 @@
-"""api/errors.py 的单元测试：OpenAI 风格错误体（M03 任务 4）。
+"""api/errors.py 的单元测试：OpenAI 风格错误体（M03 任务 4 + 任务 B 收口）。
 
 三层覆盖：
 1. 纯函数层——type 映射与错误体形态（controller 裁决的 4xx/5xx 归类）；
@@ -6,11 +6,10 @@
    翻译（不经过 HTTP，错误码三元组期望值直接取自 GatewayError 实例，不在
    测试里重复冻结 message——那是 test_error_registry.py 的职责）；
 3. 应用装配层——register_error_handlers 注册后的探针 app 上走真实 HTTP：
-   OpenAI 面 400 + unsupported_field，非 OpenAI 面保持 FastAPI 默认 422。
+   400 + unsupported_field，404/405/500 兜底（controller 裁决补的缺口）。
 
-真实 app 的旧端点行为不变由最后一组用例钉住：注册处理器后 /v1/llm 对白名单
-外字段仍是 422 detail 形态（此前无用例覆盖 extra 场景，防止注册动作静默
-改变旧端点行为）。
+M03 任务 5 删除旧 /v1/llm 端点后全部路由无条件 OpenAI 风格：原"非 OpenAI 面
+回退 FastAPI 默认 422"与旧端点钉住用例随收口移除，替换为 404/405/500 覆盖。
 """
 
 import json
@@ -39,7 +38,6 @@ from llm_gateway.core.errors import (
     UNSUPPORTED_FIELD,
     GatewayError,
 )
-from llm_gateway.core.schemas import LLMRequest
 from llm_gateway.main import app as real_app
 
 # ---------------------------------------------------------------------------
@@ -146,7 +144,7 @@ async def test_gateway_error_keeps_dynamic_message_but_stable_code() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 2. 处理器直调：RequestValidationError -> OpenAI 体（按路径分流）
+# 2. 处理器直调：RequestValidationError -> OpenAI 体
 # ---------------------------------------------------------------------------
 
 
@@ -197,25 +195,14 @@ async def test_extra_field_takes_precedence_over_other_validation_errors() -> No
     assert body["code"] == UNSUPPORTED_FIELD
 
 
-@pytest.mark.asyncio
-async def test_non_openai_surface_falls_back_to_fastapi_default_422() -> None:
-    # 旧端点行为不变：非 OpenAI 面路径复用 FastAPI 默认处理器，响应形态
-    # （422 + detail 列表）与未注册本处理器时逐字节一致。
-    exc = RequestValidationError(errors=[_extra_field_error()], body={})
-    response = await request_validation_handler(_request_for("/v1/llm"), exc)
-    assert response.status_code == 422
-    body = _response_json(response)
-    assert list(body) == ["detail"]
-
-
 # ---------------------------------------------------------------------------
 # 3. 应用装配：register_error_handlers 之后的真实 HTTP 行为
 # ---------------------------------------------------------------------------
 
 
 def _probe_app() -> FastAPI:
-    # 探针 app：最小路由复刻两个面的行为面，验证注册动作本身（不依赖任务 B
-    # 的真实 /v1/chat/completions 端点）。
+    # 探针 app：最小路由复刻 OpenAI 面的行为面，验证注册动作本身（含任务 B
+    # 补齐的 404/405/500 兜底；真实端点的端到端覆盖在 tests/contract/）。
     app = FastAPI()
     register_error_handlers(app)
 
@@ -225,20 +212,24 @@ def _probe_app() -> FastAPI:
 
     @app.post("/v1/chat/completions/fail")
     async def _chat_fail(request: ChatCompletionRequest) -> dict[str, bool]:
-        # 模拟任务 B 的端点直接 raise GatewayError 的形态：处理器应把注册表
+        # 模拟真实端点直接 raise GatewayError 的形态：处理器应把注册表
         # 三元组渲染成 OpenAI 体（而非 FastAPI 默认 500）。
         raise GatewayError(UNKNOWN_MODEL)
 
-    @app.post("/v1/llm")
-    async def _legacy(request: LLMRequest) -> dict[str, bool]:
-        return {"ok": True}
+    @app.post("/v1/chat/completions/explode")
+    async def _explode(request: ChatCompletionRequest) -> dict[str, bool]:
+        # 未捕获异常：兜底处理器应渲染 500 OpenAI 体而非 FastAPI 默认
+        # plain text，且响应先于异常重新抛出返回。
+        raise RuntimeError("内部炸弹（不应出现在响应体）")
 
     return app
 
 
 @pytest.fixture()
 def probe_client() -> TestClient:
-    return TestClient(_probe_app())
+    # raise_server_exceptions=False：Exception 兜底处理器发出响应后 Starlette
+    # 会重新抛出原异常，宽松客户端才能断言已发出的兜底响应体。
+    return TestClient(_probe_app(), raise_server_exceptions=False)
 
 
 def test_probe_openai_surface_rejects_unknown_field_400(probe_client: TestClient) -> None:
@@ -279,7 +270,7 @@ def test_probe_openai_surface_accepts_whitelisted_request(probe_client: TestClie
 
 def test_probe_openai_surface_renders_gateway_error_as_openai_body(probe_client: TestClient) -> None:
     # 端点 raise GatewayError 时的 HTTP 级翻译：code/status 取注册表，
-    # type 按 4xx 归 invalid_request_error——任务 B 的端点可直接依赖此路径。
+    # type 按 4xx 归 invalid_request_error——真实端点可直接依赖此路径。
     response = probe_client.post(
         "/v1/chat/completions/fail",
         json={"model": "general-primary", "messages": [{"role": "user", "content": "hi"}]},
@@ -290,27 +281,59 @@ def test_probe_openai_surface_renders_gateway_error_as_openai_body(probe_client:
     assert body["type"] == INVALID_REQUEST_ERROR
 
 
-def test_probe_legacy_surface_keeps_default_422(probe_client: TestClient) -> None:
+def test_probe_unknown_path_returns_openai_404(probe_client: TestClient) -> None:
+    # 任务 B 补缺口：404 走 OpenAI 体（code=None，注册表不扩员），type 按
+    # 4xx 归 invalid_request_error。
+    response = probe_client.get("/v1/nonexistent")
+    assert response.status_code == 404
+    body = _body(response.json())
+    assert set(body) == {"message", "type", "code"}
+    assert body["code"] is None
+    assert body["type"] == INVALID_REQUEST_ERROR
+    assert body["message"] == "Not Found"
+
+
+def test_probe_wrong_method_returns_openai_405(probe_client: TestClient) -> None:
+    # 任务 B 补缺口：405（Starlette 对已匹配路径方法不匹配的 HTTPException）
+    # 同样是 OpenAI 体。
+    response = probe_client.get("/v1/chat/completions")
+    assert response.status_code == 405
+    body = _body(response.json())
+    assert body["code"] is None
+    assert body["type"] == INVALID_REQUEST_ERROR
+    assert body["message"] == "Method Not Allowed"
+
+
+def test_probe_unhandled_exception_returns_openai_500(probe_client: TestClient) -> None:
+    # 任务 B 补缺口：未捕获异常兜底 500 + api_error + code=None，message 固定
+    # 文案、不回显异常内容（design.md §3.9：响应体不出现异常细节）。
     response = probe_client.post(
-        "/v1/llm",
-        json={"model": "general-primary", "messages": [{"role": "user", "content": "hi"}], "top_k": 5},
+        "/v1/chat/completions/explode",
+        json={"model": "general-primary", "messages": [{"role": "user", "content": "hi"}]},
     )
-    assert response.status_code == 422
-    assert "detail" in response.json()
+    assert response.status_code == 500
+    body = _body(response.json())
+    assert set(body) == {"message", "type", "code"}
+    assert body["type"] == API_ERROR
+    assert body["code"] is None
+    assert "内部炸弹" not in body["message"]
 
 
 # ---------------------------------------------------------------------------
-# 4. 真实 app：注册处理器后旧端点行为不变
+# 4. 真实 app：注册处理器后的真实端点行为
 # ---------------------------------------------------------------------------
 
 
-def test_real_app_legacy_endpoint_keeps_default_422_for_extra_field() -> None:
-    # 此前无用例覆盖旧端点的 extra_forbidden 场景（只有 validator 组合错 422），
-    # 这里补钉：M03 注册 OpenAI 错误处理器不得静默改变旧端点行为。
+def test_real_app_extra_field_maps_to_unsupported_field_400() -> None:
+    # 真实 app 端到端钉住（旧端点删除前本用例钉的是"旧端点保持 422 detail"，
+    # 收口后 OpenAI 面即全量面）：/v1/chat/completions 白名单外字段 400
+    # unsupported_field，validation 失败发生在任何凭据/上游依赖之前。
     client = TestClient(real_app)
     response = client.post(
-        "/v1/llm",
+        "/v1/chat/completions",
         json={"model": "general-primary", "messages": [{"role": "user", "content": "hi"}], "top_k": 5},
     )
-    assert response.status_code == 422
-    assert "detail" in response.json()
+    assert response.status_code == 400
+    body = _body(response.json())
+    assert body["code"] == UNSUPPORTED_FIELD
+    assert body["type"] == INVALID_REQUEST_ERROR

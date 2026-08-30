@@ -2,12 +2,13 @@
 
 M02 把 catalog 常量改为配置加载产物后，api_key_env 来自 core/config.py 的
 加载结果，但对外行为必须保持 demo 语义：DEEPSEEK_API_KEY 未设置时，
-/v1/llm 以 503 gateway_misconfigured 拒绝服务，且不产生任何上游调用。
-（M01 最终审查 triage 指出该路径此前无契约测试覆盖。）
+/v1/chat/completions 以 503 gateway_misconfigured 拒绝服务，且不产生任何上游
+调用。（M01 最终审查 triage 指出该路径此前无契约测试覆盖；M03 任务 B 随
+/v1/llm 删除把路径迁到统一 OpenAI 端点，错误体同步换 OpenAI 形态。）
 
-本文件与 test_demo_semantics.py 相互独立、不共享 fixture：这里的用例在
-构造任何 openai client 之前就失败，因此不需要那边为 respx 拦截上游流量
-准备的 openai legacy httpx shim。
+本文件与 test_chat_api.py 相互独立、不共享 mock 细节：这里的用例在构造任何
+openai client 之前就失败，因此不需要为 respx 拦截上游流量准备的 openai legacy
+httpx shim（shim 由 tests/contract/conftest.py 提供，对本文件无害）。
 """
 
 import httpx
@@ -48,14 +49,16 @@ async def test_missing_primary_api_key_returns_503_gateway_misconfigured(client,
     monkeypatch.setenv("DEEPSEEK_BACKUP_API_KEY", "test-backup-key")
 
     response = await client.post(
-        "/v1/llm",
+        "/v1/chat/completions",
         json={"model": "general-primary", "messages": [{"role": "user", "content": "你好"}]},
     )
 
     assert response.status_code == 503
-    detail = response.json()["detail"]
-    assert detail["code"] == "gateway_misconfigured"
+    error = response.json()["error"]
+    assert error["code"] == "gateway_misconfigured"
     # message 来自注册表默认三元组（逐字冻结于 tests/unit/test_error_registry.py）。
-    assert detail["message"] == "Gateway 模型凭据未配置"
+    assert error["message"] == "Gateway 模型凭据未配置"
+    # 5xx 类按 controller 裁决归 api_error。
+    assert error["type"] == "api_error"
     # 拒绝发生在任何上游调用之前：主/备模型都没有被碰。
     assert upstream_any.call_count == 0
