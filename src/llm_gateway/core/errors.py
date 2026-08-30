@@ -40,7 +40,7 @@ ErrorCode = Literal[
     "use_stream_endpoint",
     "unsupported_combination",
     "structured_output_unsupported",
-    # 预留码（本里程碑只注册不使用，M05 准入 / M06 预算 / M08 校验消费）
+    # 预留码（M02 只注册，后续里程碑消费：M05 准入 / M06 预算 / M08 校验）
     "unauthorized",
     "rate_limited",
     "overloaded",
@@ -116,7 +116,8 @@ ERROR_REGISTRY: Final[dict[ErrorCode, ErrorSpec]] = {
     USE_STREAM_ENDPOINT: ErrorSpec("流式请求请使用 /v1/llm/stream", 400),
     UNSUPPORTED_COMBINATION: ErrorSpec("流式输出不支持 response_schema", 400),
     STRUCTURED_OUTPUT_UNSUPPORTED: ErrorSpec("模型不支持 Structured Output", 400),
-    # -- 预留码：本里程碑只注册不使用。status 的出处分三类，如实注明：
+    # -- 预留注册码（M05/M06/M08 已消费各自部分；request_cancelled 待消费）。
+    #    status 的出处分三类，如实注明：
     #    1) 401/429/503 与 400 类：取自 design.md 的准入/校验映射（§3.1/§3.2/§3.4）；
     #    2) output_truncated / business_validation_failed 的 502：design.md §3.7
     #       只列码名、未指定 status，沿用 demo 期 GatewayError 默认 502 的惯例；
