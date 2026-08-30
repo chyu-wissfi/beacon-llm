@@ -1,0 +1,18 @@
+# 构建上下文最小化：只进 Dockerfile 显式 COPY 的资产面。
+# 版本库、虚拟环境、运行产物与开发资产（测试/文档/交付包）一律不进镜像上下文。
+.git
+.github
+.venv
+data
+__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+.superpowers
+.claude
+tests
+docs
+packages
+config/local
+Makefile
+README.md

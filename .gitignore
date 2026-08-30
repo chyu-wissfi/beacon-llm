@@ -11,3 +11,7 @@ build/
 
 # 运行期产物：M09 起 trace 落库在 data/traces.db（重启可清，无迁移工具）。
 data/
+
+# 本地配置实验目录（M11）：个人实验用的配置副本不入库（load_config 可指向
+# 任意根目录），仓库内 config/*.yaml 是唯一生效配置面。
+config/local/
