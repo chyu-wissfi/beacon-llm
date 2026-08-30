@@ -38,3 +38,10 @@ Dependencies (no lockfile yet): fastapi, uvicorn, openai, pydantic, jsonschema. 
 - Pydantic models use `ConfigDict(extra="forbid")` throughout - adding fields requires updating both sides intentionally.
 - 术语与 CONTEXT.md 冲突时当场修正，不引入同义词（尤其：聚合维度叫"调用方 Caller"，禁用"租户"）。
 - 注释用中文并解释设计动机（why），保持 demo 现有风格。
+
+
+## 提速策略
+
+编码任务尽量派给subagent，你重点做好任务调度与统筹；但也要做任务分级，不然太慢了。以下任务由你直接实现，不派 subagent，不走brief/报告/审查流程
+- (a) 10 行以内且不改变行为的注释/文案/配置修正；
+- (b) 你刚审查过的文件上的微调。直接做+跑 make check 即可。其余任务照旧走实现+审查双流程。纯测试文件用轻量审查（只审断言边界与既有用例零改动）。
