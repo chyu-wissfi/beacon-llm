@@ -6,19 +6,19 @@ OpenAI 方言（chat.completion 结构、SSE chunk、[DONE] 终态）只在本�
 进入 services 层的仍是内部 LLMRequest / LLMResponse / 内部事件流（§3.3），
 demo 的 content.delta / response.completed 线格式不在这里之外出现。
 
-M03 字段语义边界（与 api/schemas.py 的白名单注释互为表里）：
-- temperature / max_tokens / response_format 已过白名单，但下游协议尚未承载——
-  Provider Protocol 定稿在 M04（finish_reason / 流式 usage 回传），结构化输出
-  （response_format 内部结构）消费在 M06-M08。本层不透传它们，也不伪造行为。
-- stream_options.include_usage 同理：M03 流式链路拿不到上游 usage（provider.stream
-  只回传文本增量，M04 定稿后才有真值），附一个 usage=0 的块等于向调用方撒谎，
-  故 include_usage 的语义消费与 M04 一并落地，本里程碑只放行不消费。
+字段语义边界（与 api/schemas.py 的白名单注释互为表里）：
+- temperature / max_tokens / response_format / include_usage 在 M04 接线落地：
+  前两者透传到 Provider（None 不传参）；response_format 的 json_object /
+  json_schema 两形态在这里翻译成内部协议（json_mode / response_schema），
+  未知 type 或缺 schema 报 unsupported_field；深层形态校验仍后置（M07/M08）。
+- 本层不透传白名单外字段，也不伪造行为：任何"放行但未消费"的字段都必须
+  在注释里标出后置里程碑，而不是静默吞掉。
 """
 
 import json
 import time
 from collections.abc import AsyncIterator
-from typing import Final, Literal
+from typing import Any, Final, Literal
 from uuid import uuid4
 
 from fastapi import APIRouter
@@ -30,6 +30,7 @@ from llm_gateway.api.schemas import ChatCompletionRequest
 from llm_gateway.core.errors import (
     ERROR_REGISTRY,
     UNSUPPORTED_COMBINATION,
+    UNSUPPORTED_FIELD,
     GatewayError,
 )
 from llm_gateway.core.schemas import LLMRequest, LLMResponse
@@ -79,9 +80,9 @@ class ChatChoice(BaseModel):
 
     index: int = Field(ge=0)
     message: ChatMessage
-    # M03 恒为 stop：Provider Protocol 尚未回传上游终态原因，真实映射
-    # （length 等）随 M04 落地；Literal 锁死当前唯一取值，M04 扩展即显式变更。
-    finish_reason: Literal["stop"]
+    # 内部词表收窄（M04）：只承认 stop / length（截断识别依据）；值取
+    # LLMResponse.finish_reason，None 仅出自旧调用路径，对外兜底 stop。
+    finish_reason: Literal["stop", "length"]
 
 
 class ChatCompletionResponse(BaseModel):
@@ -98,7 +99,8 @@ class ChatCompletionResponse(BaseModel):
 
 
 class ChunkDelta(BaseModel):
-    # M03 流式只产出文本增量，delta 不含 role 首块（openai SDK 对缺 role 容忍）。
+    # 流式只产出文本增量，delta 不含 role 首块（openai SDK 对缺 role 容忍）；
+    # 允许空串：终态块的 delta=""（M04）。
     model_config = ConfigDict(extra="forbid")
 
     content: str
@@ -109,7 +111,8 @@ class ChunkChoice(BaseModel):
 
     index: int = Field(ge=0)
     delta: ChunkDelta
-    finish_reason: str | None = None
+    # 与 ChatChoice 同款收窄（M04）：内容块恒 None，终态块取词表值。
+    finish_reason: Literal["stop", "length"] | None = None
 
 
 class ChatCompletionChunk(BaseModel):
@@ -120,7 +123,9 @@ class ChatCompletionChunk(BaseModel):
     created: int
     model: str
     choices: list[ChunkChoice]
-    # usage 字段随 M04 流式 usage 回传一起加入；本里程碑 chunk 无 usage 键。
+    # usage chunk 的载体（M04）：仅 include_usage 时在 [DONE] 前附一块，
+    # choices 为空（OpenAI 惯例）；其余块此键为 null。
+    usage: CompletionUsage | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -128,12 +133,54 @@ class ChatCompletionChunk(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+def _finish_reason_or_stop(value: str | None) -> Literal["stop", "length"]:
+    # provider 层保证内部词表（base.py normalize）；对旧调用路径的 None 与
+    # 理论上的词表外值兜底 stop——非流式出口的终态原因不得为 None。
+    return "length" if value == "length" else "stop"
+
+
+def _translate_response_format(fmt: dict[str, Any]) -> tuple[dict[str, Any] | None, bool]:
+    # response_format -> (response_schema, json_mode)。OpenAI 的包装结构在这里
+    # 一次性翻译为内部协议：json_schema 提取内层 schema 走 response_schema 既有
+    # 链路（supports_structured_output 检查 + 本地校验）；json_object 无 schema，
+    # 只开 JSON 模式（本地校验无从谈起）。未知 type / 缺 schema 用
+    # UNSUPPORTED_FIELD 显式点名 response_format（动态 message 是注册表的合法覆盖）。
+    fmt_type = fmt.get("type")
+    if fmt_type == "json_object":
+        return None, True
+    if fmt_type == "json_schema":
+        inner = fmt.get("json_schema")
+        schema = inner.get("schema") if isinstance(inner, dict) else None
+        if isinstance(schema, dict):
+            return schema, False
+        raise GatewayError(UNSUPPORTED_FIELD, message="response_format.json_schema 缺少合法的 schema")
+    raise GatewayError(
+        UNSUPPORTED_FIELD,
+        message=f"response_format.type 只支持 json_object / json_schema，收到：{fmt_type!r}",
+    )
+
+
 def _to_internal_request(request: ChatCompletionRequest) -> LLMRequest:
-    # stream 不进内部请求：它只在本端点内选分支，内部协议无此字段。
-    # response_format 不译成 response_schema——OpenAI 的 response_format 是
-    # 包装结构（type: json_object / json_schema），直接当 schema 用会对内容
-    # 做错误校验；其内部结构的消费在 M06-M08 按设计接线。
-    return LLMRequest(model=request.model, messages=request.messages, prompt=request.prompt)
+    # stream 不进内部请求：它只在本端点内选分支（内部协议的 stream 死字段已随
+    # M04 清理）。response_format 不直接当 schema 用：它是包装结构，必须经翻译。
+    response_schema, json_mode = (
+        _translate_response_format(request.response_format)
+        if request.response_format is not None
+        else (None, False)
+    )
+    include_usage = (
+        request.stream_options.include_usage is True if request.stream_options is not None else False
+    )
+    return LLMRequest(
+        model=request.model,
+        messages=request.messages,
+        prompt=request.prompt,
+        temperature=request.temperature,
+        max_tokens=request.max_tokens,
+        include_usage=include_usage,
+        json_mode=json_mode,
+        response_schema=response_schema,
+    )
 
 
 def _to_chat_completion(response: LLMResponse, created: int) -> ChatCompletionResponse:
@@ -148,7 +195,8 @@ def _to_chat_completion(response: LLMResponse, created: int) -> ChatCompletionRe
             ChatChoice(
                 index=0,
                 message=ChatMessage(role="assistant", content=response.content),
-                finish_reason="stop",
+                # provider 回传的上游终态原因；None 仅出自旧调用路径，对外兜 stop。
+                finish_reason=_finish_reason_or_stop(response.finish_reason),
             )
         ],
         usage=CompletionUsage(
@@ -187,6 +235,37 @@ async def _chunk_stream(
                 )
             )
         elif event["type"] == "response.completed":
+            # 终态 chunk（M04）：finish_reason 非 None、delta 空串——依赖终态原因
+            # 的调用方（截断识别等，消费在 M06/M08）从这里拿到信号。
+            yield _encode_chunk(
+                ChatCompletionChunk(
+                    id=completion_id,
+                    object="chat.completion.chunk",
+                    created=created,
+                    model=event["model"],
+                    choices=[
+                        ChunkChoice(index=0, delta=ChunkDelta(content=""), finish_reason=event["finish_reason"])
+                    ],
+                )
+            )
+            usage = event["usage"]
+            if internal_request.include_usage and usage is not None:
+                # usage chunk（OpenAI 惯例）：[DONE] 前附一块，choices 为空；
+                # 仅当调用方显式请求（include_usage）才发，不请求不谎报。
+                yield _encode_chunk(
+                    ChatCompletionChunk(
+                        id=completion_id,
+                        object="chat.completion.chunk",
+                        created=created,
+                        model=event["model"],
+                        choices=[],
+                        usage=CompletionUsage(
+                            prompt_tokens=usage.input_tokens,
+                            completion_tokens=usage.output_tokens,
+                            total_tokens=usage.input_tokens + usage.output_tokens,
+                        ),
+                    )
+                )
             yield _SSE_DONE
         else:
             # response.failed：UPSTREAM_STREAM_FAILED 按注册表口径渲染成 OpenAI

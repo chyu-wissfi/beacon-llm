@@ -7,8 +7,11 @@ models:
     provider_model: deepseek-v4-flash
     base_url: https://api.deepseek.com
     api_key_env: DEEPSEEK_API_KEY
-    # provider_api 标记上游协议族，M02 只声明不消费（当前唯一合法值 chat）。
+    # provider_api 标记上游协议族（M04 起 chat / responses 两族，
+    # openai_compatible 据此分派传输）。
     provider_api: chat
+    # provider 是注册表查表键（M04 任务 5）：显式声明而非吃默认值。
+    provider: openai_compatible
     structured_output_mode: json_object
     supports_structured_output: true
     # fallback 链是 M02 的声明式占位：M06 编排层才改为消费此字段，
@@ -24,6 +27,7 @@ models:
     base_url: https://api.deepseek.com
     api_key_env: DEEPSEEK_BACKUP_API_KEY
     provider_api: chat
+    provider: openai_compatible
     structured_output_mode: json_object
     supports_structured_output: true
     # 备用模型自身没有下一级降级目标：链到此为止。

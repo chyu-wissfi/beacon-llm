@@ -134,9 +134,9 @@ async def test_out_of_range_values_rejected_400_no_upstream(client, mock_upstrea
 
 
 async def test_whitelisted_optional_fields_accepted(client, mock_upstream):
-    # 白名单内的可选字段（含本里程碑不透传的 temperature / max_tokens /
-    # response_format——见 api/chat.py 的 M03 边界注释）不触发 400：拒绝它们
-    # 会破坏"openai SDK 零改动可调"（不变量 #3）。
+    # 白名单内的可选字段不触发 400：拒绝它们会破坏"openai SDK 零改动可调"
+    # （不变量 #3）。M04 起 temperature / max_tokens / response_format 的语义
+    # 已接线（透传上游 / 翻译为内部协议，见 test_chat_api.py 白名单接线段）。
     upstream = mock_upstream.post(PRIMARY_URL, json__model=PRIMARY_PROVIDER_MODEL).respond(
         200, json=completion("ok")
     )

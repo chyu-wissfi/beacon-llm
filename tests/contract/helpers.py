@@ -92,13 +92,34 @@ def _sse_chunk_payload(text: str) -> dict[str, Any]:
     }
 
 
+def _sse_usage_chunk_payload(prompt_tokens: int = 13, completion_tokens: int = 5) -> dict[str, Any]:
+    # 上游的 usage 块（include_usage 回传，OpenAI 惯例：choices 为空）；
+    # 默认用量与 completion() 的默认值同口径，便于用例直接对账。
+    return {
+        "id": "chatcmpl-test",
+        "object": "chat.completion.chunk",
+        "created": 1_700_000_000,
+        "model": "provider-model-ignored",
+        "choices": [],
+        "usage": {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
+        },
+    }
+
+
 def _encode_sse_chunk(text: str) -> bytes:
     return f"data: {json.dumps(_sse_chunk_payload(text))}\n\n".encode()
 
 
-def sse_body(chunks: list[str]) -> bytes:
-    # 完整的上游 SSE 流：若干增量块 + [DONE] 终止符（openai AsyncStream 据此结束迭代）。
-    return b"".join(_encode_sse_chunk(text) for text in chunks) + b"data: [DONE]\n\n"
+def sse_body(chunks: list[str], *, include_usage: bool = False) -> bytes:
+    # 完整的上游 SSE 流：若干增量块 +（可选）usage 块 + [DONE] 终止符。
+    # include_usage 默认 False：既有用例行为零改动（M04 新增参数）。
+    parts = [_encode_sse_chunk(text) for text in chunks]
+    if include_usage:
+        parts.append(f"data: {json.dumps(_sse_usage_chunk_payload())}\n\n".encode())
+    return b"".join(parts) + b"data: [DONE]\n\n"
 
 
 def sse_stream_then_break(chunks: list[str]) -> AsyncIterator[bytes]:
