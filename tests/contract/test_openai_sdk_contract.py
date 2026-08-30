@@ -221,8 +221,9 @@ async def test_sdk_unsupported_field_maps_to_bad_request_error_no_upstream(sdk, 
 async def test_sdk_fallback_exhaustion_maps_to_internal_server_error(sdk, mock_upstream):
     # 5xx 半边：主备全耗尽 -> 502 model_unavailable -> SDK InternalServerError
     # （>=500 的映射），e.code 仍从注册表口径解析。
-    # max_retries=0 在此承担语义职责：SDK 一次调用 = 网关一条完整 fallback 链
-    # （2 主 + 2 备），若 SDK 默认重试 5xx，计数会被放大成三倍。
+    # max_retries=0 在此承担语义职责：SDK 一次调用 = 网关一条完整 fallback 链。
+    # M06 统一预算（ADR-0003）：总尝试 4 次 = 主模型 3 次（单模型上限
+    # 预算-1，给后续候选留机会）+ 备用 1 次；SDK 默认重试会把计数再放大。
     primary = mock_upstream.post(PRIMARY_URL, json__model=PRIMARY_PROVIDER_MODEL).mock(
         side_effect=httpx.ConnectError("primary down")
     )
@@ -234,6 +235,6 @@ async def test_sdk_fallback_exhaustion_maps_to_internal_server_error(sdk, mock_u
     assert exc_info.value.code == "model_unavailable"
     assert exc_info.value.status_code == 502
     assert exc_info.value.type == "api_error"
-    # fallback 链在 SDK 消费方身后完整走完：2 次主模型 + 2 次备用。
-    assert primary.call_count == 2
-    assert backup.call_count == 2
+    # fallback 链在 SDK 消费方身后完整走完：3 次主模型 + 1 次备用 = 预算 4。
+    assert primary.call_count == 3
+    assert backup.call_count == 1

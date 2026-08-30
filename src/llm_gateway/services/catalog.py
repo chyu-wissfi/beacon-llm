@@ -12,6 +12,11 @@ from llm_gateway.core.schemas import PromptTemplate
 
 MODEL_CONFIGS = CONFIG.models
 
+# 价格表版本快照的导出面（M06）：RunContext 构建时快照进 Run 上下文，
+# 与 MODEL_CONFIGS 同理——catalog 是 M02 配置中心化的对外接缝，编排层
+# 不绕过它直接读 CONFIG。
+PRICE_VERSION = CONFIG.price_version
+
 PROMPT_TEMPLATES = {
     ("knowledge_decision", "v1"): PromptTemplate(
         name="knowledge_decision",

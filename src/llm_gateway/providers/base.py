@@ -16,7 +16,7 @@ M04 相对 M01 的三处定稿（design.md §3.6）：
 """
 
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from typing import Any, Final, Protocol
 
@@ -93,6 +93,9 @@ class Provider(Protocol):
     # 类型上承诺的是 Coroutine[..., AsyncIterator[str]]，任何 async generator
     # 实现都无法结构匹配，调用方的 `async for ... in provider.stream(...)`
     # 也会被判错。纯类型声明调整：Protocol 成员从不执行，无运行期影响。
+    # M06 收窄返回类型为 AsyncGenerator：编排层取消传播依赖 aclose 关闭下游
+    # 流（contextlib.aclosing），AsyncIterator 类型面不承诺 aclose；所有
+    # Adapter 实现本就是 async generator 函数，结构上零改动。
     def stream(
         self,
         config: ModelConfig,
@@ -101,4 +104,4 @@ class Provider(Protocol):
         # include_usage：openai chat 协议需显式向上游请求 usage 回传
         # （stream_options）；anthropic / responses 原生回传，忽略此开关。
         include_usage: bool = False,
-    ) -> AsyncIterator[ContentDelta | StreamCompleted]: ...
+    ) -> AsyncGenerator[ContentDelta | StreamCompleted, None]: ...

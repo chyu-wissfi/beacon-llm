@@ -84,8 +84,9 @@ async def test_non_stream_returns_openai_chat_completion_shape(client, mock_upst
 
 
 async def test_retryable_error_retries_primary_then_falls_back_to_backup(client, mock_upstream):
-    # 不变量：可重试的临时故障按"主模型最多 2 次尝试 -> 切备用"的链路执行；
-    # 上游请求计数是这条链路的可观测证明（2 次主模型 + 1 次备用 = 3）。
+    # 不变量：可重试的临时故障按 fallback 链路执行；上游请求计数是这条链路的
+    # 可观测证明。M06 统一预算（ADR-0003）：总尝试 4 次 = 主模型 3 次（单模型
+    # 上限 = 预算-1，给后续候选留机会）+ 备用 1 次。
     # 响应的 model 字段暴露实际服务方（platform 模型名，provider_model 不出网关）。
     primary = mock_upstream.post(PRIMARY_URL, json__model=PRIMARY_PROVIDER_MODEL).mock(
         side_effect=httpx.ConnectError("primary connection refused")
@@ -98,11 +99,11 @@ async def test_retryable_error_retries_primary_then_falls_back_to_backup(client,
     body = response.json()
     assert body["model"] == "general-backup"  # 实际服务方是备用模型
     assert body["choices"][0]["message"]["content"] == "backup ok"
-    assert primary.call_count == 2  # 主模型重试 1 次（共 2 次尝试）
+    assert primary.call_count == 3  # 主模型 3 次尝试耗尽（M06 统一预算）
     assert backup.call_count == 1
     # 尝试计数不再出现在响应体（OpenAI 形态无此字段），从 trace 对账。
     assert len(CALL_TRACES) == 1
-    assert CALL_TRACES[0].attempts == 3
+    assert CALL_TRACES[0].attempts == 4
 
 
 async def test_retry_exhaustion_returns_model_unavailable(client, mock_upstream):
@@ -119,8 +120,9 @@ async def test_retry_exhaustion_returns_model_unavailable(client, mock_upstream)
     error = _error_body(response.json())
     assert error["code"] == "model_unavailable"
     assert error["type"] == "api_error"
-    assert primary.call_count == 2
-    assert backup.call_count == 2
+    # M06 统一预算：主模型 3 次（单模型上限）+ 备用 1 次 = 预算 4 次耗尽。
+    assert primary.call_count == 3
+    assert backup.call_count == 1
 
     assert len(CALL_TRACES) == 1
     trace = CALL_TRACES[-1]
@@ -146,7 +148,8 @@ def _structured_request() -> LLMRequest:
 
 async def test_invalid_json_does_not_trigger_fallback(mock_upstream):
     # 不变量：invalid_json 是 GatewayError（内容质量问题），换模型也解决不了，
-    # 必须直接失败——绝不消耗备用模型的调用。
+    # 绝不消耗备用模型的调用。M06 修复调用（spec 任务 5）：schema 失败先携错误
+    # 反馈重调一次（消耗统一预算、仍打主模型）；修复仍失败才报错。
     primary = mock_upstream.post(PRIMARY_URL, json__model=PRIMARY_PROVIDER_MODEL).respond(
         200, json=completion("这不是JSON{{{")
     )
@@ -156,12 +159,13 @@ async def test_invalid_json_does_not_trigger_fallback(mock_upstream):
     with pytest.raises(GatewayError) as exc_info:
         await call_with_fallback(_structured_request())
     assert exc_info.value.code == "invalid_json"
-    assert primary.call_count == 1
+    assert primary.call_count == 2  # 原始调用 + 1 次修复（恰好 1 次）
     assert backup.call_count == 0
 
 
 async def test_schema_validation_failed_does_not_trigger_fallback(mock_upstream):
     # 不变量：schema_validation_failed 同样是 GatewayError，不进入 fallback。
+    # M06 修复调用：先重调一次（恰好 1 次修复）再报错。
     primary = mock_upstream.post(PRIMARY_URL, json__model=PRIMARY_PROVIDER_MODEL).respond(
         200, json=completion(json.dumps({"answer": 123}))  # answer 不是 string
     )
@@ -171,7 +175,7 @@ async def test_schema_validation_failed_does_not_trigger_fallback(mock_upstream)
     with pytest.raises(GatewayError) as exc_info:
         await call_with_fallback(_structured_request())
     assert exc_info.value.code == "schema_validation_failed"
-    assert primary.call_count == 1
+    assert primary.call_count == 2  # 原始调用 + 1 次修复（恰好 1 次）
     assert backup.call_count == 0
 
 
@@ -424,7 +428,8 @@ async def test_stream_falls_back_before_first_chunk(client, mock_upstream):
     assert chunks[-1]["choices"][0]["finish_reason"] == "stop"
     # 实际服务方逐块标注为备用模型（含终态块）。
     assert {chunk["model"] for chunk in chunks} == {"general-backup"}
-    assert primary.call_count == 1
+    # M06 统一预算：首块前重试与 fallback 共享预算，主模型 3 次 + 备用 1 次。
+    assert primary.call_count == 3
     assert backup.call_count == 1
 
 

@@ -15,7 +15,7 @@ AsyncOpenAI(..., max_retries=0)：网关是重试的唯一权威，SDK 内置重
 
 import json
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 from typing import Any, cast
 
 from openai import AsyncOpenAI
@@ -175,7 +175,7 @@ class OpenAICompatibleProvider:
         messages: list[Message],
         timeout_seconds: float,
         include_usage: bool = False,
-    ) -> AsyncIterator[ContentDelta | StreamCompleted]:
+    ) -> AsyncGenerator[ContentDelta | StreamCompleted, None]:
         # 逐事件读取上游响应，产出内部 tagged 事件流（design.md §3.6 定稿）。
         # 异常映射包住整个迭代：流中途断开（APITimeoutError/APIConnectionError
         # 等）同样不穿透 SDK 类型；GatewayError（含缺凭据）直接放行。
