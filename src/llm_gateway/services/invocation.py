@@ -58,6 +58,7 @@ from llm_gateway.core.schemas import (
     ModelConfig,
     Usage,
 )
+from llm_gateway.observability.metrics import REQUESTS_IN_FLIGHT, RETRIES_TOTAL
 from llm_gateway.providers import PROVIDER_REGISTRY
 from llm_gateway.providers.base import (
     FINISH_REASON_LENGTH,
@@ -238,6 +239,9 @@ async def call_with_fallback(
     validate_model(request.model, request.response_schema)
     # 构建点 = 编排入口：之后全链路只读（spec 任务 1）。
     ctx = build_run_context(request, caller, clock)
+    # 在途计数（M10）：进入状态机即持有，一切终态（含取消/异常）在 finally
+    # 释放——准入拒绝不进编排，不计入（指标语义见 metrics.py）。
+    REQUESTS_IN_FLIGHT.inc()
     try:
         return await _run_chain(ctx, sleep)
     except asyncio.CancelledError:
@@ -245,6 +249,8 @@ async def call_with_fallback(
         # ——取消语义绝不吞。finalize 幂等，内层已落终态时这里是 no-op。
         ctx.trace.finalize("cancelled", None)
         raise
+    finally:
+        REQUESTS_IN_FLIGHT.dec()
 
 
 async def _run_chain(
@@ -304,6 +310,9 @@ async def _run_chain(
                 if exc.code not in PROVIDER_RETRYABLE_CODES:
                     ctx.trace.finalize("failed", None, error_code=exc.code)
                     raise
+                # 重试计数在动作点（M10 任务 4）：每次"可重试->退避->再试"计一次；
+                # 修复调用（质量关卡）不是重试，不计（口径差异见 metrics.py）。
+                RETRIES_TOTAL.labels(model=model_name).inc()
                 # 可重试：退避后进入下一轮（预算/deadline 由 try_spend 判定）。
                 await _backoff_sleep(sleep, exc, attempts_on_model - 1)
                 continue
@@ -371,6 +380,8 @@ async def stream_with_fallback(
     # SSE / OpenAI chunk / [DONE] 等线格式由 api 层一次性翻译（design.md §3.3）。
     validate_model(request.model, None)
     ctx = build_run_context(request, caller, clock)
+    # 在途计数与非流式同款语义（M10）：流式持有到生成器一切终结形态。
+    REQUESTS_IN_FLIGHT.inc()
     try:
         async for event in _stream_chain(ctx, sleep):
             yield event
@@ -380,6 +391,8 @@ async def stream_with_fallback(
         # 处理中不得 await（finalize 是同步内存写，安全），处理后必须原样上抛。
         ctx.trace.finalize("cancelled", None)
         raise
+    finally:
+        REQUESTS_IN_FLIGHT.dec()
 
 
 async def _stream_chain(
@@ -439,6 +452,8 @@ async def _stream_chain(
                     return
                 if exc.code not in PROVIDER_RETRYABLE_CODES:
                     break
+                # 与非流式同款重试计数口径（M10）：首块前的可重试故障每次再试计一次。
+                RETRIES_TOTAL.labels(model=model_name).inc()
                 await _backoff_sleep(sleep, exc, attempts_on_model - 1)
                 continue
             except asyncio.CancelledError:
