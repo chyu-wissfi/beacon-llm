@@ -5,11 +5,11 @@
 
 .PHONY: check test-live run docker
 
-# ruff 检查面 = src + tests，与 pyright 的 include 对齐：
-# src 是网关、tests 是全部测试源（Agent 侧交付包 packages/ 在 M12 交付时
-# 一并纳入检查面）——当前覆盖这两处即覆盖全部源码面，无工具链检查盲区。
+# ruff 检查面 = src + tests + packages，与 pyright 的 include 对齐：
+# src 是网关、packages/modelport 是 Agent 侧交付包（M12 起入闸门），
+# tests 是全部测试源——覆盖这三处即覆盖全部源码面，不存在工具链检查盲区。
 check:
-	uv run ruff check src tests
+	uv run ruff check src tests packages
 	uv run pyright
 	uv run pytest -m "not live"
 

@@ -364,6 +364,7 @@ async def stream_with_fallback(
     *,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    request_id: str | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     # 流式状态机（spec 任务 6/7 的铁律载体）：
     # - 首块前：与非流式同款重试/退避/fallback 节奏，调用方无感知；
@@ -379,7 +380,9 @@ async def stream_with_fallback(
     #   {"type": "response.failed", "error": <注册表错误码>}
     # SSE / OpenAI chunk / [DONE] 等线格式由 api 层一次性翻译（design.md §3.3）。
     validate_model(request.model, None)
-    ctx = build_run_context(request, caller, clock)
+    # request_id 由端点层指定（M12）：流式 chunk 的 id 与 trace.request_id 同源，
+    # 调用方可从首个 chunk 取到 request_id 与 Trace 对账；未指定时兼容旧行为自生成。
+    ctx = build_run_context(request, caller, clock, request_id=request_id)
     # 在途计数与非流式同款语义（M10）：流式持有到生成器一切终结形态。
     REQUESTS_IN_FLIGHT.inc()
     try:

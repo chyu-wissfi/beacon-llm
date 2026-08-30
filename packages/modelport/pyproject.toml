@@ -1,0 +1,18 @@
+[project]
+name = "modelport"
+version = "0.1.0"
+description = "LLM Gateway 的 Agent 侧客户端包：Agent 的唯一依赖，封装网关接入与错误码映射"
+requires-python = ">=3.13"
+# openai SDK 是实现细节（对 Agent 是黑盒，不变量 #2）：ModelPort 内部用它说
+# OpenAI 兼容协议，公开面不暴露任何供应商 SDK 符号。
+dependencies = [
+    "openai",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# src layout：wheel 只打包 src/modelport，examples 等不进发布产物。
+[tool.hatch.build.targets.wheel]
+packages = ["src/modelport"]

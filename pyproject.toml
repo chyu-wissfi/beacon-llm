@@ -46,6 +46,11 @@ packages = ["src/llm_gateway"]
 # 只收集 tests/：src/ 是实现代码不是测试源；根目录已无历史 demo（gateway.py 已删除），
 # tests/ 即全部测试源。
 testpaths = ["tests"]
+markers = [
+    # live 冒烟：真模型 + 真实凭据 + 网络，make check 以 -m "not live" 排除，
+    # CI 不跑；单独入口 make test-live（M12）。
+    "live: real-model smoke tests requiring live upstream credentials",
+]
 # pytest-asyncio：契约测试用显式 `pytestmark = pytest.mark.asyncio`（strict 语义），
 # 这里把模式与 fixture 的 event loop scope 显式钉死为当前实际行为（unset 即 function），
 # 防止 pytest-asyncio 升级后隐式默认变化导致夹具行为漂移或配置告警。
@@ -66,8 +71,9 @@ select = ["E", "F", "W", "I"]
 ignore = ["E501"]
 
 [tool.pyright]
-# 检查面与 ruff 对齐：src + tests 全量通过是本任务的验收口径；
-# 根目录已无历史 demo（gateway.py 已删除），src + tests 即全部源码，无额外检查面。
-include = ["src", "tests"]
+# 检查面与 ruff 对齐：src + tests + packages 全量通过是本任务的验收口径；
+# src 是网关、packages 是 Agent 侧交付包（modelport，M12 起入闸门）、
+# tests 是全部测试源，无额外检查面。
+include = ["src", "tests", "packages"]
 pythonVersion = "3.13"
 typeCheckingMode = "standard"
