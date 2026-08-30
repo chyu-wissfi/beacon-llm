@@ -11,7 +11,16 @@ from typing import Any
 
 import httpx
 
+from llm_gateway.core.config import CONFIG
 from llm_gateway.services.catalog import MODEL_CONFIGS
+
+# ---------------------------------------------------------------------------
+# 认证（M05）：契约测试的合法调用方身份取自配置中心的加载产物（单一事实来源，
+# callers.yaml 换 key 时测试零改动）；需要 401 场景的用例按请求覆盖该头。
+# ---------------------------------------------------------------------------
+
+VALID_CALLER_KEY = next(iter(CONFIG.callers))
+AUTH_HEADERS = {"Authorization": f"Bearer {VALID_CALLER_KEY}"}
 
 # ---------------------------------------------------------------------------
 # 上游坐标：从 MODEL_CONFIGS 派生供应商模型名与 URL，避免硬编码，也保证

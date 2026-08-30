@@ -11,8 +11,11 @@ import pytest
 import pytest_asyncio
 import respx
 
+from llm_gateway.core import ratelimit
+from llm_gateway.core.breaker import reset_breakers
 from llm_gateway.main import app
 from llm_gateway.services.trace_service import CALL_TRACES
+from tests.contract.helpers import AUTH_HEADERS
 from tests.support.httpx_shim import openai_legacy_httpx  # noqa: F401
 
 __all__ = ["openai_legacy_httpx"]
@@ -43,6 +46,17 @@ def _clean_traces():
     CALL_TRACES.clear()
 
 
+@pytest.fixture(autouse=True)
+def _reset_admission_state():
+    # 准入/熔断是进程内全局状态（不变量 #17）：用例间的令牌消耗、并发计数、
+    # 熔断失败数都必须清零，否则限流类断言会被前序用例的残留击穿。
+    ratelimit.reset_admission()
+    reset_breakers()
+    yield
+    ratelimit.reset_admission()
+    reset_breakers()
+
+
 @pytest.fixture
 def mock_upstream():
     # assert_all_mocked=True：任何未注册的上游请求直接让测试失败（离线保证）。
@@ -54,9 +68,12 @@ def mock_upstream():
 
 @pytest_asyncio.fixture
 async def client():
-    # 用 httpx ASGI 传输直打 app，不起端口、不走网络。
+    # 用 httpx ASGI 传输直打 app，不起端口、不走网络。默认携带合法调用方头
+    # （M05 起 /v1/chat/completions 鉴权）；401 用例按请求覆盖该头。
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://gateway.test") as c:
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://gateway.test", headers=AUTH_HEADERS
+    ) as c:
         yield c
 
 
@@ -66,5 +83,7 @@ async def client_lenient():
     # 发响应再由 Starlette 重新抛出原异常，严格传输会把异常直接抛进测试；宽松
     # 传输只用于断言"兜底响应体形态"的用例，其余用例保持严格以暴露真实崩溃。
     transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
-    async with httpx.AsyncClient(transport=transport, base_url="http://gateway.test") as c:
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://gateway.test", headers=AUTH_HEADERS
+    ) as c:
         yield c

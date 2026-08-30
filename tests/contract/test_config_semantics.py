@@ -17,6 +17,7 @@ import pytest_asyncio
 import respx
 
 from llm_gateway.main import app
+from tests.contract.helpers import AUTH_HEADERS
 
 pytestmark = pytest.mark.asyncio
 
@@ -34,9 +35,12 @@ def upstream_any():
 
 @pytest_asyncio.fixture
 async def client():
-    # 用 httpx ASGI 传输直打 app，不起端口、不走网络。
+    # 用 httpx ASGI 传输直打 app，不起端口、不走网络。默认携带合法调用方头
+    # （M05 起鉴权，本用例关心的是鉴权之后的凭据缺失语义）。
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://gateway.test") as c:
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://gateway.test", headers=AUTH_HEADERS
+    ) as c:
         yield c
 
 

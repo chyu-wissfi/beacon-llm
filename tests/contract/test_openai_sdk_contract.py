@@ -37,6 +37,7 @@ from tests.contract.helpers import (
     PRIMARY_PROVIDER_MODEL,
     PRIMARY_URL,
     SSE_HEADERS,
+    VALID_CALLER_KEY,
     completion,
     sse_body,
     sse_stream_then_break,
@@ -59,7 +60,9 @@ async def sdk():
     async with httpx.AsyncClient(transport=transport, base_url="http://gateway.test") as http_client:
         client = openai.AsyncOpenAI(
             base_url="http://gateway.test/v1",
-            api_key="test-sdk-key",  # 网关不校验调用方身份，取值仅为满足 SDK 构造
+            # M05 起网关鉴权：SDK 的 api_key 会被放入 Authorization: Bearer 头，
+            # 直接填合法调用方 key（取自 callers.yaml 加载产物，同 helpers）。
+            api_key=VALID_CALLER_KEY,
             # cast 是运行期恒等：legacy httpx1 分支在运行期被官方支持
             # （_base_client.is_legacy_httpx_async_client 显式识别），仅类型标注
             # 只声明 httpx2.AsyncClient（与 conftest 的 legacy shim 同一缺口）。
