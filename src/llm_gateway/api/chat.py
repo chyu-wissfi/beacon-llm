@@ -48,6 +48,7 @@ from llm_gateway.services.invocation import (
     validate_model,
 )
 from llm_gateway.services.prompt_service import build_messages
+from llm_gateway.validation.registry import resolve_profile
 
 router = APIRouter()
 
@@ -188,6 +189,9 @@ def _to_internal_request(request: ChatCompletionRequest) -> LLMRequest:
         include_usage=include_usage,
         json_mode=json_mode,
         response_schema=response_schema,
+        # validation 扩展字段透传进内部协议（M08）：注册表解析在端点预检与
+        # RunContext 构建期两处（纯查表无副作用），本处只搬运选择项。
+        validation=request.validation,
     )
 
 
@@ -341,6 +345,15 @@ async def create_chat_completion(
     # 注册表允许的唯一合法覆盖面（同 missing_prompt_variable 先例）。
     if request.stream and request.response_format is not None:
         raise GatewayError(UNSUPPORTED_COMBINATION, message="流式输出不支持 response_format")
+
+    # stream + validation 同款互斥（controller 裁决）：业务校验需要完整输出，
+    # 流式增量上无法执行关卡，放行即绕过不变量 #9/#10——与 response_format 同判。
+    if request.stream and request.validation is not None:
+        raise GatewayError(UNSUPPORTED_COMBINATION, message="流式输出不支持 validation")
+
+    # Validation Profile 预检（spec 任务 3）：未注册名在准入之前 400，上游请求数 == 0。
+    # 编排入口（build_run_context）会再解析一次入 RunContext，纯查表无副作用。
+    resolve_profile(request.validation)
 
     internal_request = _to_internal_request(request)
 

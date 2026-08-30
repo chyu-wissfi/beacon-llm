@@ -25,6 +25,7 @@ from llm_gateway.core.schemas import LLMRequest, Message, PromptSelection, Usage
 from llm_gateway.services.catalog import PRICE_VERSION
 from llm_gateway.services.prompt_service import build_messages
 from llm_gateway.services.trace_service import record_trace
+from llm_gateway.validation.registry import ValidationProfile, resolve_profile
 
 # ADR-0003 决策 1：总尝试上限 4 次。重试、fallback、修复调用共享此计数器。
 RUN_BUDGET_ATTEMPTS: Final = 4
@@ -139,6 +140,8 @@ class RunContext:
     include_usage: bool
     timeout_seconds: float
     price_version: str
+    # M08：业务校验 Profile 登记项（未指定为 None）；质量关卡的业务关消费。
+    validation_profile: ValidationProfile | None
     budget: Budget
     trace: TraceDraft
 
@@ -151,6 +154,9 @@ def build_run_context(
     # 构建点 = 编排入口：request_id 在此生成一次（响应 id 与 trace.request_id
     # 可对账），之后全链路只读。渲染后 Prompt（系统消息注入，prompt_service
     # 的唯一渲染出口）在此固化为 messages——构建后全链路只读。
+    # Profile 解析在 Run 状态机启动之前：未注册名是 400 类请求错误（与白名单/
+    # 能力不符同层），不产生 trace（M08 spec 任务 3）。
+    validation_profile = resolve_profile(request.validation)
     started_at = clock()
     request_id = str(uuid4())
     budget = Budget(request.timeout_seconds, clock=clock)
@@ -176,6 +182,7 @@ def build_run_context(
         include_usage=request.include_usage,
         timeout_seconds=request.timeout_seconds,
         price_version=PRICE_VERSION,
+        validation_profile=validation_profile,
         budget=budget,
         trace=trace,
     )

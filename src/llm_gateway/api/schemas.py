@@ -15,19 +15,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from llm_gateway.core.schemas import Message, PromptSelection
-
-
-class ValidationSelection(BaseModel):
-    # validation 扩展字段的载体：design.md §API 层定义为 {name, version}，走
-    # openai SDK 的 extra_body 通道提交。与 PromptSelection 同构但无 variables——
-    # 校验档案与 Prompt 模板一样是网关侧受控资产，调用方只能点名、不能提交正文。
-    # 本里程碑仅解析透传，未注册 profile 的报错（unknown_validation_profile）
-    # 在 M08 接入语义时落地。
-    model_config = ConfigDict(extra="forbid")
-
-    name: str = Field(min_length=1, max_length=100)
-    version: str = Field(min_length=1, max_length=50)
+from llm_gateway.core.schemas import Message, PromptSelection, ValidationSelection
 
 
 class StreamOptions(BaseModel):

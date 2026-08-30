@@ -30,6 +30,17 @@ class PromptSelection(BaseModel):
     variables: dict[str, str] = Field(default_factory=dict)
 
 
+class ValidationSelection(BaseModel):
+    # validation 扩展字段的内部承载：design.md §API 层定义为 {name, version}，
+    # 经 openai SDK 的 extra_body 通道提交。与 PromptSelection 同构但无 variables——
+    # 校验档案与 Prompt 模板一样是网关侧受控资产，调用方只能点名、不能提交正文。
+    # 语义消费在 M08：未注册 -> 400 unknown_validation_profile（validation/registry.py）。
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=100)
+    version: str = Field(min_length=1, max_length=50)
+
+
 class LLMRequest(BaseModel):
     # 统一 Gateway 请求协议，并在 HTTP 入口拦截不合法组合和字段。
     model_config = ConfigDict(extra="forbid")
@@ -52,6 +63,9 @@ class LLMRequest(BaseModel):
     # response_format={"type":"json_object"}（无 schema）的内部形态：仅开
     # JSON 模式，本地校验无从谈起；json_schema 形态走 response_schema 既有链路。
     json_mode: bool = False
+    # validation 扩展字段（M08 接线）：注册表查表在 validation/registry.py；
+    # api 层准入前 400 预检（未注册零上游请求），编排层入口再解析入 RunContext。
+    validation: ValidationSelection | None = None
 
 
 class Usage(BaseModel):

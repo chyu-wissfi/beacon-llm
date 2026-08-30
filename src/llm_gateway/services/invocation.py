@@ -36,9 +36,11 @@ from typing import Any, Final
 
 from jsonschema import ValidationError as JsonSchemaError
 from jsonschema import validate
+from pydantic import ValidationError as PydanticValidationError
 
 from llm_gateway.core.breaker import get_breaker
 from llm_gateway.core.errors import (
+    BUSINESS_VALIDATION_FAILED,
     INVALID_JSON,
     MODEL_UNAVAILABLE,
     OUTPUT_TRUNCATED,
@@ -72,6 +74,7 @@ from llm_gateway.services.routing import (
     unsupported_reason,
 )
 from llm_gateway.services.run_context import RunContext, build_run_context
+from llm_gateway.validation.registry import ValidationProfile
 
 # 与 demo 同名的具名 logger：logging.getLogger 按名单例，日志行为等价。
 logger = logging.getLogger("llm_gateway")
@@ -121,26 +124,48 @@ async def _backoff_sleep(
     await sleep(delay)
 
 
+def _format_business_failure(exc: PydanticValidationError) -> str:
+    # 业务校验违规项的拼接：逐条规则理由携带进修复反馈（spec 任务 1），
+    # 不做更多加工——修复提示词从简是 M06 既有边界，不做复杂反思链。
+    return "; ".join(error["msg"] for error in exc.errors())
+
+
 def _judge_output(
     response_schema: dict[str, Any] | None,
+    profile: ValidationProfile | None,
     content: str,
     finish_reason: str,
-) -> tuple[ErrorCode | None, dict[str, Any] | list[Any] | None]:
-    # 质量关卡判定（M04 三重关卡的 M06 形态）：schema 关（非法 JSON /
-    # 违反 schema）优先于截断关（finish_reason == length）；无 schema 时
-    # json_mode 不做本地校验（M04 既有语义）。返回 (问题码 | None, parsed)。
-    parsed: dict[str, Any] | list[Any] | None = None
+) -> tuple[ErrorCode | None, dict[str, Any] | list[Any] | None, str]:
+    # 校验流水线四层关卡（M08 spec 任务 1）：json.loads -> output_truncated
+    # （finish_reason=length）-> jsonschema 本地校验 -> Validation Profile 业务
+    # 校验。截断关在两道本地校验关之前：截断输出即便恰好可解析，结构也不完整，
+    # 语义准确的修复动作是提高 max_tokens 而非内容反馈。返回 (问题码 | None,
+    # parsed, 失败细节)——细节携带进修复反馈（点名违反项）。无 schema 且无
+    # profile 时仅截断关生效（M06 既有语义；json_mode 无 schema 不做本地校验）。
+    if response_schema is None and profile is None:
+        if finish_reason == FINISH_REASON_LENGTH:
+            return OUTPUT_TRUNCATED, None, ""
+        return None, None, ""
+    parsed: dict[str, Any] | list[Any] | None
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError as exc:
+        return INVALID_JSON, None, str(exc)
+    if finish_reason == FINISH_REASON_LENGTH:
+        return OUTPUT_TRUNCATED, parsed, ""
     if response_schema is not None:
         try:
-            parsed = json.loads(content)
             validate(instance=parsed, schema=response_schema)
-        except json.JSONDecodeError:
-            return INVALID_JSON, None
-        except JsonSchemaError:
-            return SCHEMA_VALIDATION_FAILED, None
-    if finish_reason == FINISH_REASON_LENGTH:
-        return OUTPUT_TRUNCATED, parsed
-    return None, parsed
+        except JsonSchemaError as exc:
+            return SCHEMA_VALIDATION_FAILED, None, exc.message
+    if profile is not None:
+        # 业务关在结构关之后：能走到这里的输出结构已双重合法，但"每个字段都
+        # 对"不等于"合起来对"（ADR-0005 背景）——非法输出绝不进入 Agent Loop。
+        try:
+            profile.model.model_validate(parsed)
+        except PydanticValidationError as exc:
+            return BUSINESS_VALIDATION_FAILED, None, _format_business_failure(exc)
+    return None, parsed, ""
 
 
 async def _quality_gates(
@@ -152,22 +177,28 @@ async def _quality_gates(
     usage: Usage,
     finish_reason: str,
 ) -> tuple[str, Usage, str, dict[str, Any] | list[Any] | None]:
-    # 修复调用（spec 任务 5）：schema 失败 -> 携带错误反馈重调；finish_reason ==
-    # length -> 提高 max_tokens 重调。上限 1 次、消耗统一预算（先查预算，预算
+    # 修复调用（spec 任务 5）：每层关卡失败 -> 携带对应错误反馈重调；
+    # finish_reason == length -> 提高 max_tokens 重调。上限 1 次、消耗统一预算（先查预算，预算
     # 见底时不再修复、直接终态）。修复失败才向调用方报错。
-    problem, parsed = _judge_output(ctx.response_schema, content, finish_reason)
+    problem, parsed, detail = _judge_output(
+        ctx.response_schema, ctx.validation_profile, content, finish_reason
+    )
     if problem is None:
         return content, usage, finish_reason, parsed
     if not ctx.budget.try_spend():
         # 预算见底：无修复机会，按原问题终态。
         ctx.trace.finalize("failed", model_name, error_code=problem)
         raise GatewayError(problem)
-    # 反馈提示词从简（spec 边界：不做复杂反思链），点名违反项即可。
+    # 反馈提示词从简（spec 边界：不做复杂反思链），点名关卡与违反项（M08：
+    # 每层失败携带对应错误反馈）。
     if problem == OUTPUT_TRUNCATED:
         feedback = Message(role="user", content="上次输出被截断，请重新输出完整内容")
         repair_max_tokens = (ctx.max_tokens or _TRUNCATION_REPAIR_BASE_TOKENS) * 2
     else:
-        feedback = Message(role="user", content=f"上次输出违反了 {problem}，请重新输出合法 JSON")
+        feedback = Message(
+            role="user",
+            content=f"上次输出被网关拒绝（{problem}）：{detail}。请按约束重新输出",
+        )
         repair_max_tokens = ctx.max_tokens
     repair_messages = [*ctx.messages, Message(role="assistant", content=content), feedback]
     try:
@@ -185,7 +216,9 @@ async def _quality_gates(
         ctx.trace.finalize("failed", model_name, error_code=exc.code)
         raise
     ctx.trace.observe_usage(usage)
-    problem, parsed = _judge_output(ctx.response_schema, content, finish_reason)
+    problem, parsed, _detail = _judge_output(
+        ctx.response_schema, ctx.validation_profile, content, finish_reason
+    )
     if problem is not None:
         # 修复后仍不过关：按原问题终态（修复失败才向调用方报错）。
         ctx.trace.finalize("failed", model_name, error_code=problem)
