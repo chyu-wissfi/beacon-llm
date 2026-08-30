@@ -112,9 +112,14 @@ ERROR_REGISTRY: Final[dict[ErrorCode, ErrorSpec]] = {
     USE_STREAM_ENDPOINT: ErrorSpec("流式请求请使用 /v1/llm/stream", 400),
     UNSUPPORTED_COMBINATION: ErrorSpec("流式输出不支持 response_schema", 400),
     STRUCTURED_OUTPUT_UNSUPPORTED: ErrorSpec("模型不支持 Structured Output", 400),
-    # -- 预留码：本里程碑只注册不使用。status 取自 design.md 的错误映射表
-    #    （§3.1/§3.2/§3.4/§3.7），message 是占位文案，消费里程碑接入时定稿；
-    #    一经 Task 4 单测冻结，再改即为显式契约变更。 --
+    # -- 预留码：本里程碑只注册不使用。status 的出处分三类，如实注明：
+    #    1) 401/429/503 与 400 类：取自 design.md 的准入/校验映射（§3.1/§3.2/§3.4）；
+    #    2) output_truncated / business_validation_failed 的 502：design.md §3.7
+    #       只列码名、未指定 status，沿用 demo 期 GatewayError 默认 502 的惯例；
+    #    3) request_cancelled：design.md 未收录此码，499 是按 nginx"客户端主动
+    #       断开"惯例自定的基线。
+    #    message 一律是占位文案，消费里程碑接入时定稿；一经 Task 4 单测冻结，
+    #    再改即为显式契约变更。 --
     UNAUTHORIZED: ErrorSpec("调用方未通过认证", 401),
     RATE_LIMITED: ErrorSpec("请求触发限流", 429),
     OVERLOADED: ErrorSpec("Gateway 过载保护中", 429),
@@ -125,8 +130,8 @@ ERROR_REGISTRY: Final[dict[ErrorCode, ErrorSpec]] = {
     OUTPUT_TRUNCATED: ErrorSpec("模型输出被截断", 502),
     BUSINESS_VALIDATION_FAILED: ErrorSpec("模型输出未通过业务校验", 502),
     UNKNOWN_VALIDATION_PROFILE: ErrorSpec("未知的 Validation Profile", 400),
-    # design.md 未指定状态；499 是"客户端主动断开"的业界惯例（nginx），
-    # 消费里程碑（M06 终态迁移）接入时再确认。
+    # 出处属上组注释第 3 类：design.md 没有这个码，499 是按 nginx 惯例自定的
+    # 基线（非既定映射）；消费里程碑（M06 终态迁移）接入时再确认。
     REQUEST_CANCELLED: ErrorSpec("请求已取消", 499),
 }
 
