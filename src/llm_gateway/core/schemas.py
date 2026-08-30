@@ -126,6 +126,14 @@ class CallTrace(BaseModel):
     caller: str | None = None
     route_reason: str | None = None
     ttft_ms: int | None = None
+    # M09 字段补全（默认 None 向后兼容）：
+    # final_endpoint：实际服务模型的上游地址（ModelConfig.base_url，编排层可见坐标；
+    # 未服务到任何模型的终态记 None，不伪造）；
+    # validation_profile：业务校验档案的注册表坐标 "{name}/{version}"（未指定为 None）；
+    # price_version：本条成本计算所用的价格表版本快照（config/prices.yaml 的 version）。
+    final_endpoint: str | None = None
+    validation_profile: str | None = None
+    price_version: str | None = None
 
 
 @dataclass(frozen=True)

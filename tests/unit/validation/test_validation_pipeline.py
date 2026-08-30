@@ -13,6 +13,7 @@ import json
 from typing import Any
 
 import pytest
+import pytest_asyncio
 
 from llm_gateway.core.errors import GatewayError
 from llm_gateway.core.schemas import LLMRequest, Message, ModelConfig, Usage
@@ -23,10 +24,22 @@ from llm_gateway.providers.fake import (
     Success,
 )
 from llm_gateway.services import invocation as inv
-from llm_gateway.services.trace_service import CALL_TRACES
+from llm_gateway.services.trace_service import CALL_TRACES, flush_pending
+from llm_gateway.storage.engine import MEMORY_DB_URL, configure_engine, dispose_engine
 from tests.unit.validation.conftest import PRIMARY, no_sleep
 
 pytestmark = pytest.mark.asyncio
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _trace_db():
+    # M09：终态会调度 trace 落库；本文件全异步，模块级注入内存库即可（同目录
+    # 的同步用例文件不触发落库，不受影响）。
+    configure_engine(MEMORY_DB_URL)
+    yield
+    await flush_pending()
+    await dispose_engine()
+
 
 # 与 OrderDecision 字段结构对齐的 JSON Schema（结构关）：业务非法样本
 # （approve+reject 同真）在此结构下完全合法——两层关卡的分工由此成立。

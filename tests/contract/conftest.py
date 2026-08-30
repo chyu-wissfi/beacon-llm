@@ -14,7 +14,8 @@ import respx
 from llm_gateway.core import ratelimit
 from llm_gateway.core.breaker import reset_breakers
 from llm_gateway.main import app
-from llm_gateway.services.trace_service import CALL_TRACES
+from llm_gateway.services.trace_service import CALL_TRACES, flush_pending
+from llm_gateway.storage.engine import MEMORY_DB_URL, configure_engine, dispose_engine
 from tests.contract.helpers import AUTH_HEADERS
 from tests.support.httpx_shim import openai_legacy_httpx  # noqa: F401
 
@@ -44,6 +45,17 @@ def _clean_traces():
     CALL_TRACES.clear()
     yield
     CALL_TRACES.clear()
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _trace_db():
+    # M09：record_trace 在所有终态路径调度落库，每用例注入全新内存库（事件循环
+    # scope 是 function，aiosqlite 连接绑定循环，引擎必须每用例建/拆），
+    # 避免写进生产默认库 data/traces.db；teardown 对账掉未完成的写任务。
+    configure_engine(MEMORY_DB_URL)
+    yield
+    await flush_pending()
+    await dispose_engine()
 
 
 @pytest.fixture(autouse=True)
