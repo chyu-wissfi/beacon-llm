@@ -10,8 +10,8 @@
 
 结构化输出三例（invalid_json / schema_validation_failed / parsed 透传）降为
 **服务层回归**（直调 call_with_fallback）：M03 起 OpenAI 面的 response_format
-只过白名单、内部结构在 M06-M08 消费（见 api/chat.py 边界注释），结构化分支
-暂无 HTTP 面；保留服务层覆盖防止编排层在 M04/M06 改造前失去回归。
+只过白名单；M04 起其两形态（json_object / json_schema）已接线（见下方白名单
+接线段），但 HTTP 面断言集中在形态翻译，三重关卡的失败路径仍由服务层回归覆盖。
 """
 
 import json
@@ -196,6 +196,97 @@ async def test_structured_output_success_passthrough(mock_upstream):
 
 
 # ---------------------------------------------------------------------------
+# 白名单字段接线（M04）：temperature / max_tokens / response_format 的语义落地
+# ---------------------------------------------------------------------------
+
+
+async def test_temperature_and_max_tokens_passthrough_upstream(client, mock_upstream):
+    # 不变量（M04）：白名单语义参数透传到上游请求体；未指定时键缺席（不伪造
+    # 上游默认值）。
+    route = mock_upstream.post(PRIMARY_URL, json__model=PRIMARY_PROVIDER_MODEL).respond(
+        200, json=completion("ok")
+    )
+    response = await client.post(CHAT_PATH, json=chat_request(temperature=0.3, max_tokens=128))
+    assert response.status_code == 200
+    upstream_body = json.loads(route.calls.last.request.content)
+    assert upstream_body["temperature"] == 0.3
+    assert upstream_body["max_tokens"] == 128
+
+    response = await client.post(CHAT_PATH, json=chat_request())
+    assert response.status_code == 200
+    upstream_body = json.loads(route.calls.last.request.content)
+    assert "temperature" not in upstream_body
+    assert "max_tokens" not in upstream_body
+
+
+async def test_response_format_json_object_enables_json_mode(client, mock_upstream):
+    # 不变量（M04）：response_format=json_object（无 schema）翻译为上游 JSON 模式：
+    # 只开 response_format，不注入 schema 约束（无从谈起）、不做本地校验。
+    route = mock_upstream.post(PRIMARY_URL, json__model=PRIMARY_PROVIDER_MODEL).respond(
+        200, json=completion("ok")
+    )
+    response = await client.post(
+        CHAT_PATH, json=chat_request(response_format={"type": "json_object"})
+    )
+    assert response.status_code == 200
+    upstream_body = json.loads(route.calls.last.request.content)
+    assert upstream_body["response_format"] == {"type": "json_object"}
+    assert all(m["role"] != "system" for m in upstream_body["messages"])
+
+
+async def test_response_format_json_schema_routes_to_schema_chain(client, mock_upstream):
+    # 不变量（M04）：response_format=json_schema 提取内层 schema 走 response_schema
+    # 既有链路：general-primary 配置 json_object 模式，上游拿到 json_object +
+    # system 注入 schema（既有行为），且返回内容经本地校验（合法 JSON 才 200）。
+    route = mock_upstream.post(PRIMARY_URL, json__model=PRIMARY_PROVIDER_MODEL).respond(
+        200, json=completion(json.dumps({"answer": "ok"}))
+    )
+    response = await client.post(
+        CHAT_PATH,
+        json=chat_request(
+            response_format={
+                "type": "json_schema",
+                "json_schema": {"name": "agent_response", "strict": True, "schema": ANSWER_SCHEMA},
+            }
+        ),
+    )
+    assert response.status_code == 200
+    upstream_body = json.loads(route.calls.last.request.content)
+    assert upstream_body["response_format"] == {"type": "json_object"}
+    assert upstream_body["messages"][0]["role"] == "system"
+    assert "JSON Schema" in upstream_body["messages"][0]["content"]
+
+
+async def test_response_format_unknown_type_rejected_400(client, mock_upstream):
+    # 不变量（M04）：未知 type 在调用模型之前拒绝（400 unsupported_field），
+    # 错误 message 点名 response_format，不消耗任何上游调用。
+    upstream_any = mock_upstream.route()
+    response = await client.post(
+        CHAT_PATH, json=chat_request(response_format={"type": "text"})
+    )
+    assert response.status_code == 400
+    error = _error_body(response.json())
+    assert error["code"] == "unsupported_field"
+    assert "response_format" in error["message"]
+    assert upstream_any.call_count == 0
+
+
+async def test_response_format_json_schema_missing_schema_rejected_400(client, mock_upstream):
+    # 不变量（M04）：json_schema 形态缺内层 schema 同样 400（不是静默降级为
+    # 无约束），拒绝在上游调用之前。
+    upstream_any = mock_upstream.route()
+    response = await client.post(
+        CHAT_PATH,
+        json=chat_request(response_format={"type": "json_schema", "json_schema": {"name": "x"}}),
+    )
+    assert response.status_code == 400
+    error = _error_body(response.json())
+    assert error["code"] == "unsupported_field"
+    assert "response_format" in error["message"]
+    assert upstream_any.call_count == 0
+
+
+# ---------------------------------------------------------------------------
 # Prompt 模板语义
 # ---------------------------------------------------------------------------
 
@@ -263,21 +354,56 @@ def _parse_sse(events: list[str]) -> list[dict[str, Any]]:
 async def test_stream_success_emits_chunks_then_done(client, mock_upstream):
     # 不变量：上游增量翻译为 OpenAI chat.completion.chunk 流，成功终态是
     # [DONE]；每个 chunk 的 model 标注实际服务方，同一流的 id/created 一致。
+    # M04 收紧：[DONE] 前有终态块（finish_reason 非 None、delta 空串），
+    # 内容块 finish_reason 全 None（M03 账本 deferred 的唯一改动点）。
     mock_upstream.post(PRIMARY_URL, json__model=PRIMARY_PROVIDER_MODEL).respond(
         200, content=sse_body(["你", "好"]), headers=SSE_HEADERS
     )
     events = await collect_sse_events(client, CHAT_PATH, chat_request(stream=True))
     assert events[-1] == "[DONE]"
     chunks = _parse_sse(events)
-    assert len(chunks) == 2
-    assert [chunk["choices"][0]["delta"]["content"] for chunk in chunks] == ["你", "好"]
-    for chunk in chunks:
+    assert len(chunks) == 3
+    content_chunks = chunks[:-1]
+    assert [chunk["choices"][0]["delta"]["content"] for chunk in content_chunks] == ["你", "好"]
+    for chunk in content_chunks:
         assert chunk["object"] == "chat.completion.chunk"
         assert chunk["model"] == "general-primary"
         assert chunk["choices"][0]["finish_reason"] is None
         assert chunk["choices"][0]["index"] == 0
+    # 终态块：截断识别信号（length）的对外出口，M06/M08 消费。
+    terminal = chunks[-1]
+    assert terminal["choices"][0]["delta"]["content"] == ""
+    assert terminal["choices"][0]["finish_reason"] == "stop"
     assert len({chunk["id"] for chunk in chunks}) == 1
     assert len({chunk["created"] for chunk in chunks}) == 1
+
+
+async def test_stream_include_usage_appends_usage_chunk_before_done(client, mock_upstream):
+    # 不变量（M04）：include_usage 时才在 [DONE] 前附 usage chunk（OpenAI 惯例：
+    # choices 为空、usage 三键口径）；网关同时向上游传 stream_options 开关。
+    route = mock_upstream.post(PRIMARY_URL, json__model=PRIMARY_PROVIDER_MODEL).respond(
+        200, content=sse_body(["你", "好"], include_usage=True), headers=SSE_HEADERS
+    )
+    events = await collect_sse_events(
+        client,
+        CHAT_PATH,
+        chat_request(stream=True, stream_options={"include_usage": True}),
+    )
+    assert events[-1] == "[DONE]"
+    chunks = _parse_sse(events)
+    usage_chunks = [chunk for chunk in chunks if chunk.get("usage") is not None]
+    assert len(usage_chunks) == 1
+    assert usage_chunks[0]["choices"] == []
+    assert usage_chunks[0]["usage"] == {
+        "prompt_tokens": 13,
+        "completion_tokens": 5,
+        "total_tokens": 18,
+    }
+    # 内容块与终态块的 usage 键为 null（不谎报用量）。
+    assert all(chunk["usage"] is None for chunk in chunks if chunk not in usage_chunks)
+    # 网关向上游请求了 usage 回传：开关到达上游请求体。
+    upstream_body = json.loads(route.calls.last.request.content)
+    assert upstream_body["stream_options"] == {"include_usage": True}
 
 
 async def test_stream_falls_back_before_first_chunk(client, mock_upstream):
@@ -292,8 +418,11 @@ async def test_stream_falls_back_before_first_chunk(client, mock_upstream):
     events = await collect_sse_events(client, CHAT_PATH, chat_request(stream=True))
     assert events[-1] == "[DONE]"
     chunks = _parse_sse(events)
-    assert [chunk["choices"][0]["delta"]["content"] for chunk in chunks] == ["备", "份"]
-    # 实际服务方逐块标注为备用模型。
+    # M04：末尾新增终态块（delta 空串），内容块仍只含备用模型的增量。
+    content_chunks = chunks[:-1]
+    assert [chunk["choices"][0]["delta"]["content"] for chunk in content_chunks] == ["备", "份"]
+    assert chunks[-1]["choices"][0]["finish_reason"] == "stop"
+    # 实际服务方逐块标注为备用模型（含终态块）。
     assert {chunk["model"] for chunk in chunks} == {"general-backup"}
     assert primary.call_count == 1
     assert backup.call_count == 1

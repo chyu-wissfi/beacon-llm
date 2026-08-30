@@ -19,6 +19,7 @@ test_chat_api.py / test_field_whitelist.py 已用 raw httpx 钉住线格式与�
   对齐"SDK 一次调用 <-> 网关一条完整 fallback 链"。
 """
 
+import json
 from typing import Any, cast
 
 import httpx
@@ -100,26 +101,54 @@ async def test_sdk_non_stream_parses_chat_completion(sdk, mock_upstream):
 
 async def test_sdk_stream_iterates_deltas_and_ends_cleanly(sdk, mock_upstream):
     # spec 任务 6 流式：上游增量被 SDK 迭代为 ChatCompletionChunk，[DONE] 处
-    # 干净收尾（不抛异常、不伪造终态块）。
-    # 已钉现状（reviewer 记录的 Minor）：M03 的流没有 finish_reason="stop" 的
-    # 终态 chunk，[DONE] 前最后一块 finish_reason=None——对 SDK 消费方的含义是
-    # "流自然结束即成功"，但依赖 finish_reason 判断截断/终止原因的调用方在 M04
-    # 落地终态 chunk 前拿不到该信号（详见任务 C 报告）。
+    # 干净收尾。M04 收紧（M03 账本预告的唯一改动点）：内容块 finish_reason 全
+    # None，[DONE] 前新增终态块（finish_reason=="stop"、delta 空串）——依赖
+    # 终态原因判断截断/终止原因的调用方从这里拿到信号。
     mock_upstream.post(PRIMARY_URL, json__model=PRIMARY_PROVIDER_MODEL).respond(
         200, content=sse_body(["你", "好"]), headers=SSE_HEADERS
     )
     stream = await sdk.chat.completions.create(model="general-primary", messages=_MESSAGES, stream=True)
     chunks: list[ChatCompletionChunk] = [chunk async for chunk in stream]
-    assert [chunk.choices[0].delta.content for chunk in chunks] == ["你", "好"]
-    for chunk in chunks:
+    content_chunks = chunks[:-1]
+    assert [chunk.choices[0].delta.content for chunk in content_chunks] == ["你", "好"]
+    for chunk in content_chunks:
         assert isinstance(chunk, ChatCompletionChunk)
         assert chunk.object == "chat.completion.chunk"
         assert chunk.model == "general-primary"
-        # 现状钉死：全程无 finish_reason 终态块（含最后一块）。
+        # 内容块全程无终态信号。
         assert chunk.choices[0].finish_reason is None
-    # 同一流内 id/created 一致（SDK 消费方靠它聚合增量）。
+    # 终态块：SDK 消费方可直接读到 finish_reason。
+    terminal = chunks[-1]
+    assert terminal.choices[0].finish_reason == "stop"
+    assert terminal.choices[0].delta.content == ""
+    # 同一流内 id/created 一致（SDK 消费方靠它聚合增量，终态块含在内）。
     assert len({chunk.id for chunk in chunks}) == 1
     assert len({chunk.created for chunk in chunks}) == 1
+
+
+async def test_sdk_stream_include_usage_emits_usage_chunk(sdk, mock_upstream):
+    # spec 任务 6 流式（M04 新增）：include_usage 时 [DONE] 前附 usage chunk，
+    # 形态取 OpenAI 惯例：choices 为空、usage 三键口径；开关同时到达上游。
+    route = mock_upstream.post(PRIMARY_URL, json__model=PRIMARY_PROVIDER_MODEL).respond(
+        200, content=sse_body(["你", "好"], include_usage=True), headers=SSE_HEADERS
+    )
+    stream = await sdk.chat.completions.create(
+        model="general-primary",
+        messages=_MESSAGES,
+        stream=True,
+        stream_options={"include_usage": True},
+    )
+    chunks: list[ChatCompletionChunk] = [chunk async for chunk in stream]
+    usage_chunks = [chunk for chunk in chunks if chunk.usage is not None]
+    assert len(usage_chunks) == 1
+    assert usage_chunks[0].choices == []
+    assert usage_chunks[0].usage == CompletionUsage(
+        prompt_tokens=13, completion_tokens=5, total_tokens=18
+    )
+    # 其余块（内容块 + 终态块）不带用量。
+    assert all(chunk.usage is None for chunk in chunks if chunk not in usage_chunks)
+    upstream_body = json.loads(route.calls.last.request.content)
+    assert upstream_body["stream_options"] == {"include_usage": True}
 
 
 # ---------------------------------------------------------------------------
