@@ -1,0 +1,32 @@
+# M11 任务 3：CI 跑与本地同一条 `make check`——保证"本地过 = CI 过"。
+# live 测试依赖真实上游凭据，已被 make check 的 `-m "not live"` 排除
+# （design.md §7：CI 默认跳过 live）。
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # setup-uv 按 .python-version（3.13）与 uv.lock 就位工具链与解释器。
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      # 依赖与项目本体一次装齐（含 dev 组：ruff / pyright / pytest 等闸门工具）。
+      - name: Sync dependencies
+        run: uv sync --frozen
+
+      # ModelPort 是 Agent 侧交付包（packages/modelport），契约测试以可编辑
+      # 形态消费它——与本地使用方式一致（spec M12：不发 PyPI）。
+      - name: Install ModelPort (editable)
+        run: uv pip install -e packages/modelport
+
+      # 唯一质量闸门：ruff + pyright + pytest（live 已排除），一个退出码。
+      - name: Quality gate
+        run: make check

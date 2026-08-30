@@ -1,0 +1,30 @@
+# M11 任务 2：单实例部署编排（design.md §7：Dockerfile + compose，SQLite 数据卷，
+# healthcheck 打 /healthz）。
+#
+# 边界（spec M11）：单 stage 部署，无蓝绿/滚动；无镜像发布流水线。
+# 上游凭据从宿主环境透传：网关只存环境变量"名字"（config/models.yaml 的
+# api_key_env），key 缺失是运行时 503 而不是启动失败，故这里允许为空。
+services:
+  gateway:
+    build: .
+    image: beacon-llm-gateway
+    ports:
+      - "8000:8000"
+    environment:
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_BACKUP_API_KEY: ${DEEPSEEK_BACKUP_API_KEY:-}
+    volumes:
+      # SQLite trace 库持久化：重启不丢审计（宿主 data/ 已被 .gitignore 排除）。
+      - ./data:/app/data
+    healthcheck:
+      # slim 镜像的健康检查走 python 标准库（不依赖 shell 管道）：
+      # 打 /healthz，非 200 即不健康。
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)"
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

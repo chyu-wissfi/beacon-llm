@@ -163,15 +163,19 @@ def build_run_context(
     request: LLMRequest,
     caller: str,
     clock: TraceClock = time.monotonic,
+    request_id: str | None = None,
 ) -> RunContext:
-    # 构建点 = 编排入口：request_id 在此生成一次（响应 id 与 trace.request_id
-    # 可对账），之后全链路只读。渲染后 Prompt（系统消息注入，prompt_service
-    # 的唯一渲染出口）在此固化为 messages——构建后全链路只读。
+    # 构建点 = 编排入口：request_id 默认在此生成一次（响应 id 与 trace.request_id
+    # 可对账），之后全链路只读。流式路径由端点层预先指定（M12）：SSE 响应的头在
+    # 生成器首次迭代前已发出，request_id 无法事后附到响应头，故流式 chunk 的 id
+    # 与 trace.request_id 同源——端点层生成后传入，调用方从首个 chunk 即可取到。
+    # 渲染后 Prompt（系统消息注入，prompt_service 的唯一渲染出口）在此固化为
+    # messages——构建后全链路只读。
     # Profile 解析在 Run 状态机启动之前：未注册名是 400 类请求错误（与白名单/
     # 能力不符同层），不产生 trace（M08 spec 任务 3）。
     validation_profile = resolve_profile(request.validation)
     started_at = clock()
-    request_id = str(uuid4())
+    request_id = request_id if request_id is not None else str(uuid4())
     budget = Budget(request.timeout_seconds, clock=clock)
     # M09 记账坐标：校验档案用请求选择项的注册表坐标（与 resolve 结果同坐标）；
     # 价格版本在构建期快照（与 RunContext.price_version 同源）。

@@ -234,7 +234,11 @@ async def _chunk_stream(
     # 编排层产出内部事件流（dict，含 type/delta/model 或 type/error），这里逐
     # 事件翻译为 OpenAI chunk 线格式。流式语义铁律（首块前可 fallback、首块后
     # 不重生成）留在编排层（design.md review 锚点 ④：invocation.py 是唯一状态机）。
-    async for event in stream_with_fallback(internal_request, caller=caller):
+    # completion_id 同时作为 RunContext 的 request_id 传入（M12）：chunk 的 id 与
+    # trace.request_id 同源，调用方从首个 chunk 即可与 /v1/traces 对账。
+    async for event in stream_with_fallback(
+        internal_request, caller=caller, request_id=completion_id
+    ):
         if event["type"] == "content.delta":
             yield _encode_chunk(
                 ChatCompletionChunk(
