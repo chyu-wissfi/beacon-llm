@@ -22,6 +22,7 @@ import pytest
 
 from llm_gateway.core.errors import GatewayError
 from llm_gateway.core.schemas import LLMRequest, Message
+from llm_gateway.services.catalog import MODEL_CONFIGS
 from llm_gateway.services.invocation import call_with_fallback
 from llm_gateway.services.trace_service import CALL_TRACES
 from tests.contract.helpers import (
@@ -462,3 +463,24 @@ async def test_traces_record_successful_call(client, mock_upstream):
     assert "content" not in trace
     assert "messages" not in trace
 
+# ---------------------------------------------------------------------------
+# 平台模型列表（M03 任务 3）
+# ---------------------------------------------------------------------------
+
+
+async def test_models_endpoint_lists_platform_models(client):
+    # 不变量：GET /v1/models 返回 OpenAI 风格 {"object": "list", "data":
+    # [{"id", "object": "model", ...}]}；数据源是配置中心加载产物 MODEL_CONFIGS
+    # （controller 裁决：不得绕过配置中心另建模型表），id 即平台模型名——
+    # 调用方请求 model 字段用的就是它；provider_model 不出网关。
+    response = await client.get("/v1/models")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["object"] == "list"
+    assert {item["id"] for item in body["data"]} == set(MODEL_CONFIGS)
+    for item in body["data"]:
+        # 形态即契约：不含 provider_model / api_key_env 等内部坐标。
+        assert set(item) == {"id", "object", "created", "owned_by"}
+        assert item["object"] == "model"
+        assert isinstance(item["created"], int)
+        assert item["owned_by"] == "beacon-llm"
