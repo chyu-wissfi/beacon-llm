@@ -51,7 +51,7 @@ class RateLimitEntry(BaseModel):
 
 class ModelEntry(BaseModel):
     # 单个平台模型的文件形态：前五个字段与 M01 的 MODEL_CONFIGS 等价迁移，
-    # 后三个是 spec 要求新增的声明式占位（provider_api/fallback/限流）。
+    # 后几个是 spec 要求新增的声明式占位（provider_api/provider/fallback/限流）。
     model_config = ConfigDict(extra="forbid")
 
     provider_model: str
@@ -59,7 +59,11 @@ class ModelEntry(BaseModel):
     api_key_env: str
     supports_structured_output: bool
     structured_output_mode: Literal["json_schema", "json_object"]
-    provider_api: Literal["chat"] = "chat"
+    # M04 起 openai_compatible 按 provider_api 分派 chat / responses 两族传输。
+    provider_api: Literal["chat", "responses"] = "chat"
+    # Provider 选择（M04 任务 5）：注册表查表键，Literal 在配置层拦下拼写错误，
+    # 不留到请求期才 KeyError。
+    provider: Literal["openai_compatible", "anthropic", "fake"] = "openai_compatible"
     fallback: list[str] = Field(default_factory=list)
     rate_limit: RateLimitEntry = Field(default_factory=RateLimitEntry)
 
@@ -208,6 +212,7 @@ def _load_models(path: Path) -> dict[str, ModelConfig]:
             supports_structured_output=entry.supports_structured_output,
             structured_output_mode=entry.structured_output_mode,
             provider_api=entry.provider_api,
+            provider=entry.provider,
             fallback=tuple(entry.fallback),
             rate_limit=RateLimitConfig(rpm=rate.rpm, tpm=rate.tpm, concurrency=rate.concurrency),
         )

@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class Message(BaseModel):
@@ -36,16 +36,22 @@ class LLMRequest(BaseModel):
 
     model: str = Field(min_length=1, max_length=100)
     messages: list[Message] = Field(min_length=1, max_length=100)
-    stream: bool = False
+    # stream 字段已删除（M04 deferred 清理）：分流只在端点层（api/chat.py）
+    # 发生，内部协议从未消费过它；stream + response_schema 互斥检查同属端点层，
+    # 原 validator 随字段一并移除。
     response_schema: dict[str, Any] | None = None
     timeout_seconds: float = Field(default=30, gt=0, le=120)
     prompt: PromptSelection | None = None
-
-    @model_validator(mode="after")
-    def check_supported_combination(self) -> "LLMRequest":
-        if self.stream and self.response_schema is not None:
-            raise ValueError("stream 与 response_schema 不能同时使用")
-        return self
+    # M03 白名单放行字段的内部承载（M04 接线，api 层已做过取值约束）：
+    # None 表示调用方未指定——provider 不传参，不伪造上游默认值。
+    temperature: float | None = Field(default=None, ge=0, le=2)
+    max_tokens: int | None = Field(default=None, ge=1)
+    # stream_options.include_usage 的内部形态：是否向上游请求流式 usage 回传，
+    # 并决定 api 层是否在 [DONE] 前附 usage chunk（OpenAI 惯例）。
+    include_usage: bool = False
+    # response_format={"type":"json_object"}（无 schema）的内部形态：仅开
+    # JSON 模式，本地校验无从谈起；json_schema 形态走 response_schema 既有链路。
+    json_mode: bool = False
 
 
 class Usage(BaseModel):
@@ -67,6 +73,9 @@ class LLMResponse(BaseModel):
     usage: Usage
     latency_ms: int = Field(ge=0)
     attempts: int = Field(ge=1)
+    # M04 起 provider 协议回传的上游终态原因（内部词表 stop/length）。
+    # None 仅出现在旧调用路径；output_truncated 关卡的消费在 M06/M08。
+    finish_reason: str | None = None
 
 
 class PromptTemplate(BaseModel):
@@ -117,8 +126,11 @@ class ModelConfig:
     api_key_env: str
     supports_structured_output: bool
     structured_output_mode: Literal["json_schema", "json_object"] = "json_schema"
-    # provider_api 的取值约束（当前只有 chat）在配置层用 Literal 收口；
-    # 运行时面放宽为 str，避免新增协议时要同时改两处类型定义。
+    # provider_api 的取值约束在配置层用 Literal 收口（M04 起 chat / responses
+    # 两族）；运行时面放宽为 str，避免新增协议时要同时改两处类型定义。
     provider_api: str = "chat"
+    # provider 选择（M04 任务 5）：注册表查表键，配置层 Literal 校验
+    # （openai_compatible / anthropic / fake），运行时面同为 str 放宽。
+    provider: str = "openai_compatible"
     fallback: tuple[str, ...] = ()
     rate_limit: RateLimitConfig | None = None

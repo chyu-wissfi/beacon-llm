@@ -33,8 +33,8 @@ class ValidationSelection(BaseModel):
 class StreamOptions(BaseModel):
     # OpenAI stream_options 目前只有 include_usage 一个键；建模成严格子模型
     # （而非宽松 dict）以延续全库 extra="forbid" 约定——已放行的字段内部混入
-    # 未知键同样按"白名单外"拒绝，而不是静默吞掉。语义消费（是否在 SSE 末尾
-    # 附 usage 块）由任务 B 的流式实现决定。
+    # 未知键同样按"白名单外"拒绝，而不是静默吞掉。语义消费（向上游请求流式
+    # usage 回传、[DONE] 前附 usage chunk）在 M04 落地（api/chat.py）。
     model_config = ConfigDict(extra="forbid")
 
     include_usage: bool | None = None
@@ -58,9 +58,10 @@ class ChatCompletionRequest(BaseModel):
     # 白名单层就 400，而不是透传给上游后由供应商报错。
     temperature: float | None = Field(default=None, ge=0, le=2)
     max_tokens: int | None = Field(default=None, ge=1)
-    # response_format 的内部结构（json_object / json_schema）在 M07/M08 消费，
-    # 本里程碑只放行字段本身、原样透传——深层形态校验后置，避免白名单层
-    # 提前锁死后续里程碑才定稿的结构。
+    # response_format 的两形态语义在 M04 落地（api/chat._translate_response_format）：
+    # json_object 开 JSON 模式（无 schema、无本地校验）；json_schema 提取内层
+    # schema 走 response_schema 既有链路。未知 type / 缺 schema 报 400
+    # unsupported_field；深层形态校验（字段级约束等）仍后置，白名单层保持宽松 dict。
     response_format: dict[str, Any] | None = None
     stream_options: StreamOptions | None = None
     prompt: PromptSelection | None = None
