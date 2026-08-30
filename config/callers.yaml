@@ -1,0 +1,6 @@
+# 调用方表：API Key -> 显示名（design.md §5，改配置重启生效，不动态签发）。
+# M02 只加载不消费：认证与准入在 M05，此处的 key 是演示占位值，
+# M05 接入鉴权时替换为真实签发的 key。
+callers:
+  demo-caller-key-001:
+    display_name: Beacon 演示 Agent

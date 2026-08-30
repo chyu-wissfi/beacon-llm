@@ -14,6 +14,7 @@ dependencies = [
     "sqlalchemy[asyncio]",
     "aiosqlite",
     "prometheus-client",
+    "pyyaml>=6.0.3",
 ]
 
 # uv 惯例的 dev 依赖分组（PEP 735）：测试/静态检查只在开发时需要，

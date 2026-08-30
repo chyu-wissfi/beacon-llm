@@ -1,0 +1,12 @@
+# 价格表：每百万 Token 的美元单价（design.md §5）。
+# version 是价格快照的版本标识：成本计算按加载时的表快照计价，
+# 版本号进 Trace 属 M09（当前只加载不消费）。
+# version 必须加引号：不加引号时 YAML 会把 2026-08-30 解析成日期对象而非字符串。
+version: "2026-08-30"
+prices:
+  general-primary:
+    input: 1.0
+    output: 4.0
+  general-backup:
+    input: 0.8
+    output: 3.2

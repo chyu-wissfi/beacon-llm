@@ -98,10 +98,27 @@ class CallTrace(BaseModel):
 
 
 @dataclass(frozen=True)
+class RateLimitConfig:
+    # 模型级限流参数的运行时载体：M02 只随配置加载流转（core/config.py 负责校验），
+    # M05 准入控制才消费；None 表示该维度未声明，不预设任何治理默认值。
+    rpm: int | None = None
+    tpm: int | None = None
+    concurrency: int | None = None
+
+
+@dataclass(frozen=True)
 class ModelConfig:
     # 将平台模型名映射为供应商模型、地址、密钥与能力配置。
+    # 前五个字段是 M01 就被 provider/编排层消费的原有面，取值语义不得漂移；
+    # 后三个是 M02 配置中心化新增的声明式字段（provider_api/fallback/限流），
+    # 随 ModelConfig 一并流转让模型配置只有一个带载者，M02 内无人消费。
     provider_model: str
     base_url: str
     api_key_env: str
     supports_structured_output: bool
     structured_output_mode: Literal["json_schema", "json_object"] = "json_schema"
+    # provider_api 的取值约束（当前只有 chat）在配置层用 Literal 收口；
+    # 运行时面放宽为 str，避免新增协议时要同时改两处类型定义。
+    provider_api: str = "chat"
+    fallback: tuple[str, ...] = ()
+    rate_limit: RateLimitConfig | None = None

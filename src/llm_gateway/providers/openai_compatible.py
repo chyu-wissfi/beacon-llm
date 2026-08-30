@@ -12,7 +12,7 @@ from typing import Any, cast
 from openai import APIConnectionError, APITimeoutError, AsyncOpenAI, RateLimitError
 from openai.types.chat import ChatCompletionMessageParam
 
-from llm_gateway.core.errors import GatewayError
+from llm_gateway.core.errors import GATEWAY_MISCONFIGURED, GatewayError
 from llm_gateway.core.schemas import Message, ModelConfig, Usage
 
 
@@ -22,7 +22,8 @@ class OpenAICompatibleProvider:
     def create_client(self, config: ModelConfig) -> AsyncOpenAI:
         api_key = os.getenv(config.api_key_env)
         if not api_key:
-            raise GatewayError("gateway_misconfigured", "Gateway 模型凭据未配置", 503)
+            # 错误码与默认三元组取自注册表（core/errors.py），调用点不写字面量。
+            raise GatewayError(GATEWAY_MISCONFIGURED)
         return AsyncOpenAI(api_key=api_key, base_url=config.base_url, max_retries=0)
 
     async def complete(
