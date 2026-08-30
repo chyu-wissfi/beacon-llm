@@ -1,6 +1,7 @@
 # 调用方表：API Key -> 显示名（design.md §5，改配置重启生效，不动态签发）。
-# M02 只加载不消费：认证与准入在 M05，此处的 key 是演示占位值，
-# M05 接入鉴权时替换为真实签发的 key。
+# M05 起被 core/auth.py 消费：`Authorization: Bearer <key>` 对表鉴权，
+# 失败 401 unauthorized。key 为签发形态随机值（secrets.token_urlsafe），
+# 新增调用方 = 在此追加条目并重启。
 callers:
-  demo-caller-key-001:
+  sk-beacon-F_5Z2f1QBbNz9ocmsyPF6VLEULG7-B0b:
     display_name: Beacon 演示 Agent

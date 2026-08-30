@@ -2,6 +2,11 @@
 # 启动资产：由 core/config.py 在导入期加载校验，任何字段缺失/类型错 = 启动失败。
 # api_key_env 只存环境变量"名字"，loader 不解析其值——key 缺失是运行时
 # 503 gateway_misconfigured（provider 层，demo 语义），不算配置错误。
+# admission 块是进程级准入阈值（M05，ADR-0004：阈值全部是配置项）；
+# 整块可省略，吃 design §3.4 基线默认（全局 20 / 每供应商 10）。
+admission:
+  global_concurrency: 20
+  provider_concurrency: 10
 models:
   general-primary:
     provider_model: deepseek-v4-flash
@@ -17,7 +22,9 @@ models:
     # fallback 链是 M02 的声明式占位：M06 编排层才改为消费此字段，
     # 在此之前 invocation.py 仍按 demo 硬编码"主模型 -> general-backup"。
     fallback: ["general-backup"]
-    # 限流参数占位：数值不代表已定稿的治理决策，M05 准入控制才消费。
+    # 限流参数（M05 起消费）：rpm 是每模型令牌桶容量，tpm 是 60 秒滑动窗口
+    # 的事后记账预算；并发超限行为见 admission 块。concurrency（每模型并发）
+    # 语义未定暂不消费，保留声明。
     rate_limit:
       rpm: 60
       tpm: 200000

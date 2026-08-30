@@ -21,6 +21,7 @@ core/errors.py 注册表为唯一事实来源（M02 双冻结），本模块只�
   日志承载（Starlette 发送兜底响应后重新抛出，uvicorn 照常记录）。
 """
 
+import math
 from typing import Any, Final
 
 from fastapi import FastAPI, Request
@@ -82,9 +83,15 @@ async def gateway_error_handler(request: Request, exc: Exception) -> JSONRespons
     # 三元组全部取自注册表托管的 GatewayError，这里只做形态翻译——message
     # 即便被调用点动态覆盖过（如拼接缺失变量名），也只是注册表默认值之上
     # 的合法覆盖面，code/status 不可变。
+    # Retry-After（M05）：429 类准入拒绝携带建议重试间隔时附响应头，
+    # ceil 成整数秒（HTTP 头惯例）；错误体形态不变。
+    headers = (
+        {"Retry-After": str(math.ceil(exc.retry_after))} if exc.retry_after is not None else None
+    )
     return JSONResponse(
         status_code=exc.status_code,
         content=openai_error_body(exc.code, exc.message, exc.status_code),
+        headers=headers,
     )
 
 

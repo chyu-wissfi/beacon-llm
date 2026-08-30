@@ -19,8 +19,13 @@ Success 剧本（providers/__init__.py），真实使用场景都自建实例。
 `attempts` 计数是 no_hidden_retry 验收的可观测面：每次 complete / stream
 调用记一次"上游请求"，断言 3 次失败 + 1 次成功恰好 4 次——provider 层
 不存在隐藏重试放大或吞减请求的任何路径。
+
+M05 新增 slow_success 剧本：准入并发验收（25 慢请求 ≤20 到上游）需要
+在途占用，故有意真 sleep——结果三元组仍是确定的（零随机），既有六剧本的
+零时钟不变量不受影响（失败类剧本仍不消耗真实时间）。
 """
 
+import asyncio
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
@@ -72,7 +77,17 @@ class ConsecutiveThenSuccess:
     raised: int = 0
 
 
-Scenario = Success | RateLimited | Timeout | StreamInterrupt | InvalidOutput | ConsecutiveThenSuccess
+@dataclass
+class SlowSuccess:
+    # 慢成功剧本（M05）：真 sleep delay_seconds 后返回确定的三元组——
+    # 只为准入并发验收提供"在途占用"，结果仍零随机可复现。
+    delay_seconds: float = 0.3
+    content: str = "ok"
+    usage: Usage = field(default_factory=lambda: Usage(input_tokens=3, output_tokens=2))
+    finish_reason: str = "stop"
+
+
+Scenario = Success | RateLimited | Timeout | StreamInterrupt | InvalidOutput | ConsecutiveThenSuccess | SlowSuccess
 
 # 坏输出剧本的兜底 usage：内容既然无效，用量语义无从谈起，记 0 不伪造。
 _EMPTY_USAGE = Usage(input_tokens=0, output_tokens=0)
@@ -112,6 +127,9 @@ class FakeAdapter:
                 scenario.raised += 1
                 raise GatewayError(MODEL_UNAVAILABLE)
             return scenario.success.content, scenario.success.usage, scenario.success.finish_reason
+        if isinstance(scenario, SlowSuccess):
+            await asyncio.sleep(scenario.delay_seconds)
+            return scenario.content, scenario.usage, scenario.finish_reason
         # Timeout / StreamInterrupt：非流式调用同样是直接失败。
         raise GatewayError(MODEL_UNAVAILABLE)
 
@@ -138,6 +156,12 @@ class FakeAdapter:
                 raise GatewayError(MODEL_UNAVAILABLE)
             scenario = scenario.success
         if isinstance(scenario, Success):
+            if scenario.content:
+                yield ContentDelta(scenario.content)
+            yield StreamCompleted(scenario.finish_reason, scenario.usage)
+            return
+        if isinstance(scenario, SlowSuccess):
+            await asyncio.sleep(scenario.delay_seconds)
             if scenario.content:
                 yield ContentDelta(scenario.content)
             yield StreamCompleted(scenario.finish_reason, scenario.usage)

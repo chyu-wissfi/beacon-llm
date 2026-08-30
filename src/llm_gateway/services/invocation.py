@@ -3,6 +3,10 @@
 本层面向 Provider 协议编程（providers/base.py），不 import 任何供应商 SDK；
 可重试与否由 provider 层映射后的错误码判定（PROVIDER_RETRYABLE_CODES），
 重试节奏（次数、退避、换模型）留在本模块。
+
+熔断反馈（M05）：逐尝试、按实际模型向 core/breaker 报告成败——计入失败
+的只有 MODEL_UNAVAILABLE（连接/超时/上游 5xx 的映射码）；上游 429（限流非
+损坏）不计，口径在 core/breaker.py 模块注中钉死。
 """
 
 import asyncio
@@ -16,6 +20,7 @@ from uuid import uuid4
 from jsonschema import ValidationError as JsonSchemaError
 from jsonschema import validate
 
+from llm_gateway.core.breaker import get_breaker
 from llm_gateway.core.errors import (
     INVALID_JSON,
     MODEL_UNAVAILABLE,
@@ -108,6 +113,8 @@ async def call_with_fallback(request: LLMRequest) -> LLMResponse:
                     attempts=attempts,
                     finish_reason=finish_reason,
                 )
+                # 熔断反馈（M05）：成功的尝试闭合/复位对应模型的状态机。
+                get_breaker(model_name).record_success()
                 record_trace(request_id, requested_model, model_name, request.prompt, usage, response.latency_ms, attempts, "success")
                 return response
             except GatewayError as exc:
@@ -117,6 +124,10 @@ async def call_with_fallback(request: LLMRequest) -> LLMResponse:
                 # 内，首次失败即抛；可重试错误沿用旧节奏：重试一次后 break 去
                 # fallback，最终对外仍归一为 model_unavailable（对外码不漂移）。
                 last_error = exc
+                if exc.code == MODEL_UNAVAILABLE:
+                    # 熔断反馈（M05）：传输故障逐尝试计入（重试两次 = 两次失败）；
+                    # 上游 429（provider_overloaded）不计——限流非损坏（见模块注）。
+                    get_breaker(model_name).record_failure()
                 if exc.code not in PROVIDER_RETRYABLE_CODES:
                     raise
                 if retry_number == 0:
@@ -167,6 +178,8 @@ async def stream_with_fallback(request: LLMRequest) -> AsyncIterator[dict[str, A
                 else:
                     completed = event
             record_trace(str(uuid4()), request.model, model_name, request.prompt, Usage(input_tokens=0, output_tokens=0), int((time.perf_counter() - started) * 1000), attempts, "success")
+            # 熔断反馈（M05）：流正常走完同样算该模型一次成功。
+            get_breaker(model_name).record_success()
             yield {
                 "type": "response.completed",
                 "model": model_name,
@@ -176,6 +189,9 @@ async def stream_with_fallback(request: LLMRequest) -> AsyncIterator[dict[str, A
             return
         except Exception as exc:
             last_error = exc
+            if isinstance(exc, GatewayError) and exc.code == MODEL_UNAVAILABLE:
+                # 熔断反馈（M05）：流式路径的传输故障同样按实际模型计入。
+                get_breaker(model_name).record_failure()
             if emitted:
                 break
             # 与非流式同款码表判定：provider 层映射后的可重试错误才切
