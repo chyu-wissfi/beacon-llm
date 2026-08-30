@@ -1,5 +1,7 @@
 # Beacon LLM Gateway
 
+[![CI](https://github.com/chyu-wissfi/beacon-llm/actions/workflows/ci.yml/badge.svg)](https://github.com/chyu-wissfi/beacon-llm/actions/workflows/ci.yml)
+
 面向业务 Agent 的 LLM 网关：调用方（Caller）不直连模型供应商，一切模型调用经
 网关完成——OpenAI 兼容协议、多供应商路由与降级、准入控制、Run 预算、结构化
 输出双重校验、Prompt 模板、Trace 审计与可观测，按生产工程标准实现的轻量单实例。
@@ -29,6 +31,8 @@ curl -sf localhost:8000/v1/chat/completions \
   -H "Authorization: Bearer <调用方 key，见 config/callers.yaml>" \
   -H "Content-Type: application/json" \
   -d '{"model": "general-primary", "messages": [{"role": "user", "content": "你好"}]}'
+curl -sf localhost:8000/metrics | head            # Prometheus 指标（按调用方/模型/状态计数）
+curl -sf "localhost:8000/v1/traces?group_by=caller" | jq  # 审计 Trace 按调用方聚合（也可按 model/prompt_version，支持 status 过滤）
 ```
 
 ## 快速开始（Docker）
@@ -92,9 +96,27 @@ make test-live    # 真模型冒烟（需真实上游 key，CI 不跑）
 测试三层：`tests/unit`（服务/核心逻辑直测）→ `tests/contract`（API 层，
 离线 Fake/拦截）→ `tests/live`（真模型冒烟）。
 
+`make check` 完全离线可复现：上游全部经 Fake Adapter / 请求拦截模拟，
+克隆后无需任何真实 key 即可跑通（CI 与本地跑的是同一条命令，"本地过 =
+CI 过"）。真模型行为（usage 自洽、TTFT、真实 429）只由 `make test-live`
+覆盖，两层的分工理由见 `docs/design.md` §8.1。
+
+## 交付证据与验收
+
+设计 §8 的 17 条行为不变量与六大功能（非流式/流式/结构化输出/模板/
+可观测/重试/限流）逐条对应到可执行测试，证据矩阵见
+[`docs/specs/acceptance-audit.md`](docs/specs/acceptance-audit.md)
+（每条不变量给出契约层与 live 层的测试文件::用例名）。复核方式：
+
+```bash
+make check          # 契约层全量（含 ModelPort 隔离证明与错误码映射全集对齐）
+make test-live      # live 层真模型冒烟
+```
+
 ## 文档地图
 
 - [`docs/design.md`](docs/design.md)：设计全文（主链路 + 决策 why + 不变量总表）
 - [`docs/adr/`](docs/adr/)：已落锤的硬决策（ADR-0001~0005）
 - [`docs/specs/`](docs/specs/)：M01-M12 执行契约与验收命令
+- [`docs/specs/acceptance-audit.md`](docs/specs/acceptance-audit.md)：不变量审计表（交付证据矩阵）
 - [`CONTEXT.md`](CONTEXT.md)：术语表（项目统一语言的唯一权威）
