@@ -11,6 +11,8 @@
 
 import pytest
 
+from llm_gateway.observability.metrics import reset_metrics
+
 
 def pytest_configure(config: pytest.Config) -> None:
     # 注册 live marker：make check 排除，make test-live 单独执行。
@@ -18,3 +20,12 @@ def pytest_configure(config: pytest.Config) -> None:
         "markers",
         "live: 需要真实上游与凭据的验收测试；make check 用 -m 'not live' 排除，make test-live 单独执行",
     )
+
+
+@pytest.fixture(autouse=True)
+def _reset_metrics():
+    # Prometheus 指标是进程内全局累计（不变量 #17 同款单进程面）：
+    # 状态机/准入/记账类用例都会触接线点，用例前后清零避免跨用例串扰。
+    reset_metrics()
+    yield
+    reset_metrics()
