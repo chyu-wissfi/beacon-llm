@@ -7,7 +7,7 @@
   ——启动失败的排障入口就是这一行异常，不能让人再翻源码对照。
 - api_key_env 只存环境变量"名字"，不在此解析值：key 缺失是运行时 503
   gateway_misconfigured（provider 层，demo 语义），fail-fast 只针对配置文件本身
- （文件缺失、缺必填字段、类型错）。
+ （文件缺失、缺必填字段、类型错、文件间引用失配）。
 - 环境变量覆盖写在 loader 里（PRIMARY_*/BACKUP_*，兼容 demo 用法）：demo 中 env
   覆盖代码默认值，现在默认值来自 YAML，覆盖语义逐字等价（按平台模型逐个映射）。
 
@@ -245,7 +245,17 @@ def load_config(root: Path | str = DEFAULT_CONFIG_DIR) -> GatewayConfig:
     root = Path(root)
     models = _load_models(root / "models.yaml")
     callers = _load_callers(root / "callers.yaml")
-    prices, price_version = _load_prices(root / "prices.yaml")
+    prices_path = root / "prices.yaml"
+    prices, price_version = _load_prices(prices_path)
+    # 交叉校验 models ⊆ prices：M01 时代模型表与价格表硬编码在同一文件、两集合
+    # 必然一致；M02 拆成两个 YAML 后"加模型忘补价"成为可配置状态，而 prices 在
+    # trace_service.calculate_cost 里今天就按模型名索引消费——失配会在请求期
+    # KeyError，主模型的成功调用记不上 trace（花费凭空消失、备用静默接盘）甚至
+    # 对外误报 502。必须启动期拦下，别拖到请求期才爆炸（与 fallback 悬空引用
+    # 同一标准）。反方向的多余价格条目无行为危害，留待 M05 锚定模型集时裁决。
+    for name in models:
+        if name not in prices:
+            raise ConfigError(f"{prices_path}: 缺少模型 {name} 的价格条目")
     return GatewayConfig(models=models, callers=callers, prices=prices, price_version=price_version)
 
 

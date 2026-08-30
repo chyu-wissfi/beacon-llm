@@ -219,8 +219,9 @@ def test_env_override_empty_string_still_counts_as_set(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# 坏配置 fail-fast：九种破坏形态（清单复用 Task 1 实测报告第三节），
-# 每种都断言错误文本指明文件与字段——启动失败的排障入口就是这一行异常。
+# 坏配置 fail-fast：十种破坏形态（前九种清单复用 Task 1 实测报告第三节，第十种
+# 是最终审查 I-1 的跨文件失配），每种都断言错误文本指明文件与字段——启动失败
+# 的排障入口就是这一行异常。
 # ---------------------------------------------------------------------------
 
 
@@ -256,6 +257,15 @@ def _with_wrong_type_rate_limit() -> dict[str, Any]:
     models = _valid_models()
     models["models"]["general-primary"]["rate_limit"]["rpm"] = "sixty"
     return models
+
+
+def _without_model_price() -> dict[str, Any]:
+    # 跨文件失配（最终审查 I-1）：往 models.yaml 加了平台模型却忘了在 prices.yaml
+    # 补价格条目——M01 时代两表硬编码在同一文件不可能失配，M02 拆开后必须靠
+    # loader 交叉校验在启动期拦下，否则失配拖到请求期才在 calculate_cost 爆炸。
+    prices = _valid_prices()
+    del prices["prices"]["general-backup"]
+    return prices
 
 
 @pytest.mark.parametrize(
@@ -301,6 +311,11 @@ def _with_wrong_type_rate_limit() -> dict[str, Any]:
             {"models": _with_wrong_type_rate_limit()},
             ["models.yaml", "general-primary.rate_limit.rpm", "类型错误"],
             id="wrong-type-rate-limit",
+        ),
+        pytest.param(
+            {"prices": _without_model_price()},
+            ["prices.yaml", "缺少模型 general-backup 的价格条目"],
+            id="model-missing-price-entry",
         ),
     ],
 )
