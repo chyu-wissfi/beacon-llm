@@ -21,7 +21,7 @@ spec M06 目标原文：RunContext 冻结、统一预算计数器、指数退避
 allow_request，凡未走到成败记账的路径必须 relinquish_probe（防幽灵探测）。
 
 唯一终态（任务 8）：success / failed / cancelled 三选一恰好一次迁移；trace 由
-TraceDraft.finalize 幂等写入（暂写内存，M09 落库）。请求级错误（白名单/能力
+TraceDraft.finalize 幂等写入（M09 起落库：trace_service 调度异步持久化）。请求级错误（白名单/能力
 不符，400 类）在 RunContext 构建前拒绝，不进状态机、不产生 trace。
 """
 
@@ -333,7 +333,8 @@ async def _run_chain(
                 attempts=ctx.budget.spent,
                 finish_reason=finish_reason,
             )
-            ctx.trace.finalize("success", model_name)
+            # final_endpoint：实际服务模型的上游地址（M09 字段补全）。
+            ctx.trace.finalize("success", model_name, final_endpoint=config.base_url)
             return response
         # 单模型尝试耗尽但预算尚存：记路由理由，切下一候选。
         ctx.trace.route_reasons.append(
@@ -454,7 +455,7 @@ async def _stream_chain(
             # 是已知且可识别的）。
             breaker.record_success()
             ctx.trace.observe_usage(completed.usage if completed is not None else None)
-            ctx.trace.finalize("success", model_name)
+            ctx.trace.finalize("success", model_name, final_endpoint=config.base_url)
             yield {
                 "type": "response.completed",
                 "model": model_name,

@@ -68,6 +68,8 @@ class TraceDraft:
         caller: str,
         started_at: float,
         clock: TraceClock,
+        validation_label: str | None = None,
+        price_version: str | None = None,
     ) -> None:
         self.request_id = request_id
         self.requested_model = requested_model
@@ -75,6 +77,11 @@ class TraceDraft:
         self.caller = caller
         self.started_at = started_at
         self.clock = clock
+        # M09 记账面：构建期固化（与 RunContext 同源的只读快照）。
+        # validation_label = 注册表坐标 "{name}/{version}"（未指定 None）；
+        # price_version = 价格表版本快照（成本按哪个版本计价的可定位面）。
+        self.validation_label = validation_label
+        self.price_version = price_version
         # 已观测用量累计：成功的尝试 + 修复调用；失败/取消的缺口不伪造。
         self.usage = Usage(input_tokens=0, output_tokens=0)
         self.ttft_ms: int | None = None
@@ -98,9 +105,12 @@ class TraceDraft:
         status: str,
         actual_model: str | None,
         error_code: str | None = None,
+        final_endpoint: str | None = None,
     ) -> None:
         # 唯一终态写入口：success / failed / cancelled 三选一恰好一次（M06 任务 8）。
         # attempts 取 Budget 实时值（计数器终值即审计值，ADR-0003 后果节）。
+        # final_endpoint 由成功终态的调用点传入（实际服务模型的 base_url），
+        # 未服务到任何模型的终态保持 None（M09 字段补全）。
         if self.finalized:
             return
         self.finalized = True
@@ -117,6 +127,9 @@ class TraceDraft:
             caller=self.caller,
             route_reason="; ".join(self.route_reasons) if self.route_reasons else None,
             ttft_ms=self.ttft_ms,
+            final_endpoint=final_endpoint,
+            validation_profile=self.validation_label,
+            price_version=self.price_version,
         )
 
     def bind_budget(self, budget: Budget) -> None:
@@ -160,6 +173,11 @@ def build_run_context(
     started_at = clock()
     request_id = str(uuid4())
     budget = Budget(request.timeout_seconds, clock=clock)
+    # M09 记账坐标：校验档案用请求选择项的注册表坐标（与 resolve 结果同坐标）；
+    # 价格版本在构建期快照（与 RunContext.price_version 同源）。
+    validation_label = (
+        f"{request.validation.name}/{request.validation.version}" if request.validation else None
+    )
     trace = TraceDraft(
         request_id=request_id,
         requested_model=request.model,
@@ -167,6 +185,8 @@ def build_run_context(
         caller=caller,
         started_at=started_at,
         clock=clock,
+        validation_label=validation_label,
+        price_version=PRICE_VERSION,
     )
     trace.bind_budget(budget)
     return RunContext(
