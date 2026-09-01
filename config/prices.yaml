@@ -10,3 +10,11 @@ prices:
   general-backup:
     input: 0.8
     output: 3.2
+  # 双协议组合的牌价：中转站计价与官方牌价可能不同，此处为占位值——
+  # 只影响 trace 成本记账，不影响行为；有实际牌价后按需修改。
+  vve-gpt-responses:
+    input: 1.25
+    output: 10.0
+  vve-claude-anthropic:
+    input: 3.0
+    output: 15.0

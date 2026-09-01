@@ -154,7 +154,14 @@ def test_import_time_config_loaded_from_default_dir():
     # 能 import 到 CONFIG 本身就证明加载成功；只断言产物形态与平台模型名
     # （结构性契约），不断言具体供应商取值，避免与仓库 config/ 内容漂移耦合。
     assert isinstance(CONFIG, GatewayConfig)
-    assert set(CONFIG.models) == {"general-primary", "general-backup"}
+    # 平台模型名集合 = 仓库 config/models.yaml 的键全集：存量两模型 +
+    # 双协议组合（vve-*，provider/provider_api 各自异构）。
+    assert set(CONFIG.models) == {
+        "general-primary",
+        "general-backup",
+        "vve-gpt-responses",
+        "vve-claude-anthropic",
+    }
 
 
 # ---------------------------------------------------------------------------
