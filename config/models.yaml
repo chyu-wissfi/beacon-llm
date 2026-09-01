@@ -43,3 +43,37 @@ models:
       rpm: 60
       tpm: 200000
       concurrency: 8
+  # ---- 双协议组合：模型开放，协议必须异构 ----
+  # 两个条目共用同一中转站 key（api_key_env 指向同一环境变量是合法的：
+  # 变量名只是取值坐标，协议差异由 provider/provider_api 承载）。
+  vve-gpt-responses:
+    provider_model: gpt-5.6-luna
+    # OpenAI SDK 在 base_url 后拼 /responses（Responses API），/v1 必须显式带上。
+    base_url: https://api.vveai.com/v1
+    api_key_env: VVEAI_API_KEY
+    provider_api: responses
+    provider: openai_compatible
+    # Responses API 原生支持 text.format=json_schema 约束。
+    structured_output_mode: json_schema
+    supports_structured_output: true
+    fallback: []
+    rate_limit:
+      rpm: 60
+      tpm: 200000
+      concurrency: 8
+  vve-claude-anthropic:
+    provider_model: claude-sonnet-5
+    # Anthropic SDK 在 base_url 后拼 /v1/messages，base_url 不带 /v1。
+    base_url: https://api.vveai.com
+    api_key_env: VVEAI_API_KEY
+    # provider_api 只对 openai_compatible 有意义（anthropic 不消费），吃默认。
+    provider_api: chat
+    provider: anthropic
+    # Anthropic 协议无原生 schema 约束：仅 json_object（schema 注入 system）。
+    structured_output_mode: json_object
+    supports_structured_output: true
+    fallback: []
+    rate_limit:
+      rpm: 60
+      tpm: 200000
+      concurrency: 8
