@@ -17,6 +17,7 @@
 uv sync                                    # 依赖 + 项目本体（按 uv.lock 冻结）
 export DEEPSEEK_API_KEY=sk-...             # 主模型上游凭据
 export DEEPSEEK_BACKUP_API_KEY=sk-...      # 备用模型上游凭据
+export VVEAI_API_KEY=sk-...                # 双协议组合凭据（vve-* 两模型共用）
 make run                                   # uvicorn 起服务，端口 8000
 ```
 
@@ -47,6 +48,54 @@ docker compose down
 - 上游凭据从宿主环境变量透传（`DEEPSEEK_API_KEY` / `DEEPSEEK_BACKUP_API_KEY`）；
 - SQLite trace 库落在宿主 `data/`（卷挂载），重启不丢审计；
 - healthcheck 打 `/healthz`，容器内进程以非 root 用户运行。
+
+## 双协议组合：OpenAI Responses API 与 Anthropic Messages API
+
+同一套 `POST /v1/chat/completions` 入口，网关按请求里的 `model` 字段路由到
+不同协议适配器，调用方无需感知底层鉴权、请求体结构与返回格式差异：
+
+| 平台模型名 | 上游模型 | 协议 | 结构化输出模式 |
+|---|---|---|---|
+| `vve-gpt-responses` | `gpt-5.6-luna` | OpenAI Responses API（`client.responses.create`） | `json_schema`（原生 `text.format` 约束） |
+| `vve-claude-anthropic` | `claude-sonnet-5` | Anthropic Messages API（`client.messages.create`） | `json_object`（schema 注入 system） |
+
+curl 示例（`$KEY` 为 `config/callers.yaml` 里的调用方 key）：
+
+```bash
+# 非流式（Responses API 路径）
+curl -sf localhost:8000/v1/chat/completions \
+  -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+  -d '{"model": "vve-gpt-responses", "messages": [{"role": "user", "content": "你好"}]}'
+
+# 流式 SSE（Anthropic Messages API 路径）：逐块输出，末尾 data: [DONE]
+curl -N localhost:8000/v1/chat/completions \
+  -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+  -d '{"model": "vve-claude-anthropic", "stream": true, "messages": [{"role": "user", "content": "你好"}]}'
+
+# 结构化输出（Responses API：原生 json_schema 约束 + 本地校验）
+curl -sf localhost:8000/v1/chat/completions \
+  -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+  -d '{"model": "vve-gpt-responses", "messages": [{"role": "user", "content": "给我订单 D-1001 的决策"}],
+        "response_format": {"type": "json_schema", "json_schema": {"name": "order", "strict": true,
+          "schema": {"type": "object", "properties": {"order_id": {"type": "string"}, "approve": {"type": "boolean"}},
+                     "required": ["order_id", "approve"], "additionalProperties": false}}}}'
+
+# 模板引用（渲染在网关侧完成，trace 记录模板坐标）
+curl -sf localhost:8000/v1/chat/completions \
+  -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+  -d '{"model": "vve-gpt-responses", "messages": [{"role": "user", "content": "只回复一个词：ok"}],
+        "prompt": {"name": "knowledge_decision", "version": "v1", "variables": {"product_name": "Beacon"}}}'
+
+# 可观测：token 分类统计 / 延迟 / TTFT / 成本 / 尝试数 / 调用方
+curl -sf "localhost:8000/v1/traces?model=vve-gpt-responses" | jq
+curl -sf localhost:8000/metrics | grep -E 'llm_(requests|tokens)_total'
+```
+
+六大功能点的一键取证脚本（含重试退避与 429 限流的主动演示）：
+
+```bash
+uv run python scripts/verify_acceptance.py   # 需 VVEAI_API_KEY；消耗少量真实额度
+```
 
 ## 配置文件
 
